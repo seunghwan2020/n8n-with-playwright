@@ -126,7 +126,7 @@ async function getAuthCodeFromEmail() {
   }
 }
 
-// ====== 1. 로그인 및 2단계 인증 돌파 (ID 콕 집어서 선택 수정 완료) ======
+// ====== 1. 로그인 및 2단계 인증 돌파 (ID nldList_1 타겟팅 수정 완료) ======
 async function loginAndSaveStorageState() {
   console.log("로봇이 11번가 자동 로그인을 시작합니다...");
   if (!LOGIN_URL || !SELLER_ID || !SELLER_PW || !EMAIL_USER || !EMAIL_PW) {
@@ -151,16 +151,23 @@ async function loginAndSaveStorageState() {
   if (page.url().includes("otp") || await page.locator('text="로그인 2단계 인증"').isVisible()) {
     console.log("🔒 2단계 인증 화면 감지됨! 돌파를 시작합니다.");
     
-    // 1) 두 번째 계정(손*환)의 라디오 버튼 ID(#nldList_1)를 강제 선택 (스크린샷 기반 수정)
-    console.log("두 번째 계정(손*환, #nldList_1)을 콕 집어서 선택합니다.");
-    const targetRadio = page.locator('#nldList_1');
-    if (await targetRadio.count() > 0) {
-        await targetRadio.check({ force: true }); // 디자인에 가려져 있어도 강제로 체크
+    // 1) 승환님의 계정(손*환)인 nldList_1을 콕 집어서 강제 클릭
+    console.log("두 번째 계정(손*환, ID: nldList_1)을 선택합니다.");
+    
+    // 라벨(Label) 클릭이 실제 라디오 버튼을 활성화하는 가장 확실한 방법입니다.
+    const targetLabel = page.locator('label[for="nldList_1"]');
+    if (await targetLabel.count() > 0) {
+        await targetLabel.click({ force: true });
+        console.log("ID nldList_1에 연결된 라벨 클릭 완료.");
     } else {
-        // ID를 못 찾을 경우 대비해 텍스트로 한 번 더 시도
-        await page.locator('text="손*환"').click();
+        // 만약 라벨을 못 찾을 경우 라디오 버튼 자체를 강제 체크
+        await page.check('#nldList_1', { force: true });
+        console.log("ID nldList_1 라디오 버튼 강제 체크 완료.");
     }
     
+    // 선택이 반영될 시간을 아주 잠깐(0.5초) 줍니다.
+    await page.waitForTimeout(500);
+
     console.log("[인증정보 선택하기] 버튼 클릭!");
     await Promise.all([
       page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 60000 }).catch(() => {}),
@@ -180,10 +187,10 @@ async function loginAndSaveStorageState() {
     
     console.log("[인증번호 전송] 버튼 클릭!");
     await page.locator('button:has-text("인증번호 전송"):visible').first().click();
-    console.log("📧 인증번호 전송 버튼 클릭 완료! 메일 도착을 20초간 대기합니다.");
+    console.log("📧 인증번호 전송 버튼 클릭 완료! 메일 도착을 25초간 대기합니다.");
 
-    // 4) 20초 대기 후 이메일함에서 인증번호 빼오기 (대기 시간 조금 늘림)
-    await page.waitForTimeout(20000);
+    // 4) 25초 대기 후 이메일함에서 인증번호 빼오기 (대기 시간 넉넉히 연장)
+    await page.waitForTimeout(25000);
     const authCode = await getAuthCodeFromEmail();
     console.log(`✅ 가로챈 인증번호: ${authCode}`);
 
