@@ -23,30 +23,14 @@ const DOWNLOAD_PATH = "/data/stock.xlsx";
 const UPSERT_TABLE = process.env.UPSERT_TABLE || "n_delivery_stock";
 const TARGET_PAGE_URL = "https://soffice.11st.co.kr/view/40394";
 
-const COL_SKU_CANDIDATES = ["SKU", "sku", "상품SKU", "SellerSKU", "판매자SKU", "옵션SKU"];
-const COL_QTY_CANDIDATES = ["재고", "재고수량", "수량", "재고수", "Stock", "stock_qty"];
-
 // ====== 유틸 함수 ======
-function pickCol(row, candidates) {
-  for (const c of candidates) {
-    if (row[c] !== undefined && row[c] !== null && String(row[c]).trim() !== "") return c;
-  }
-  return null;
-}
-
 function ensureDir(p) {
   const dir = path.dirname(p);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
 async function ensureTable(client) {
-  const sql = `
-    CREATE TABLE IF NOT EXISTS ${UPSERT_TABLE} (
-      sku TEXT PRIMARY KEY,
-      stock_qty INTEGER,
-      updated_at TIMESTAMPTZ DEFAULT NOW()
-    );
-  `;
+  const sql = `CREATE TABLE IF NOT EXISTS ${UPSERT_TABLE} (sku TEXT PRIMARY KEY, stock_qty INTEGER, updated_at TIMESTAMPTZ DEFAULT NOW());`;
   await client.query(sql);
 }
 
@@ -56,37 +40,19 @@ async function upsertRowsToPostgres(rows) {
   await client.connect();
   await ensureTable(client);
 
-  let inserted = 0, skipped = 0;
-  const firstRow = rows.find(r => r && typeof r === "object");
-  if (!firstRow) return { inserted: 0, skipped: rows.length };
-
-  const skuCol = pickCol(firstRow, COL_SKU_CANDIDATES);
-  const qtyCol = pickCol(firstRow, COL_QTY_CANDIDATES);
-  if (!skuCol || !qtyCol) throw new Error("엑셀 컬럼을 못 찾았습니다.");
-
-  const stmt = `
-    INSERT INTO ${UPSERT_TABLE} (sku, stock_qty, updated_at)
-    VALUES ($1, $2, NOW())
-    ON CONFLICT (sku) DO UPDATE SET stock_qty = EXCLUDED.stock_qty, updated_at = NOW();
-  `;
+  const stmt = `INSERT INTO ${UPSERT_TABLE} (sku, stock_qty, updated_at) VALUES ($1, $2, NOW()) ON CONFLICT (sku) DO UPDATE SET stock_qty = EXCLUDED.stock_qty, updated_at = NOW();`;
 
   for (const r of rows) {
-    if (!r || typeof r !== "object") { skipped++; continue; }
-    const sku = String(r[skuCol] ?? "").trim();
-    if (!sku) { skipped++; continue; }
-    const qty = Number(String(r[qtyCol]).replace(/,/g, "").trim());
-    if (!Number.isFinite(qty)) { skipped++; continue; }
-
-    await client.query(stmt, [sku, qty]);
-    inserted++;
+    const sku = String(r["판매자SKU"] || r["SKU"] || "").trim();
+    const qty = Number(String(r["재고수량"] || r["재고"] || "0").replace(/,/g, ""));
+    if (sku && Number.isFinite(qty)) await client.query(stmt, [sku, qty]);
   }
   await client.end();
-  return { inserted, skipped, skuCol, qtyCol };
 }
 
-// ====== 네이버 웍스 이메일에서 인증번호 6자리 추출 ======
-async function getAuthCodeFromEmail() {
-  console.log(`로봇이 메일함(${EMAIL_USER})에 접속하여 인증번호를 찾습니다...`);
+// ====== [핵심 수정] 스마트 폴링: 메일이 오면 즉시 가져오기 ======
+async function getAuthCodeWithRetry(maxAttempts = 10) {
+  console.log(`메일함(${EMAIL_USER})에서 인증번호를 찾기 시작합니다...`);
   const config = {
     imap: {
       user: EMAIL_USER,
@@ -94,38 +60,39 @@ async function getAuthCodeFromEmail() {
       host: "imap.worksmobile.com",
       port: 993,
       tls: true,
-      authTimeout: 15000,
+      authTimeout: 10000,
       tlsOptions: { rejectUnauthorized: false }
     }
   };
 
-  try {
-    const connection = await imaps.connect(config);
-    await connection.openBox("INBOX");
-    const searchCriteria = ["UNSEEN"];
-    const fetchOptions = { bodies: [""], markSeen: true };
-    const messages = await connection.search(searchCriteria, fetchOptions);
+  for (let i = 1; i <= maxAttempts; i++) {
+    console.log(`[메일 확인 ${i}/${maxAttempts}회차] 5초 후 다시 확인합니다...`);
+    await new Promise(res => setTimeout(res, 5000)); // 5초 대기
 
-    if (!messages || messages.length === 0) {
+    try {
+      const connection = await imaps.connect(config);
+      await connection.openBox("INBOX");
+      const searchCriteria = ["UNSEEN"];
+      const fetchOptions = { bodies: [""], markSeen: true };
+      const messages = await connection.search(searchCriteria, fetchOptions);
+
+      if (messages && messages.length > 0) {
+        const lastMessage = messages[messages.length - 1];
+        const part = lastMessage.parts.find(p => p.which === "");
+        const mail = await simpleParser(part.body);
+        const match = (mail.text || mail.html || "").match(/\b\d{6}\b/);
+        connection.end();
+        if (match) return match[0];
+      }
       connection.end();
-      throw new Error("❌ 새로운 인증 메일이 없습니다. 11번가에서 메일 발송이 안 된 것 같습니다.");
+    } catch (err) {
+      console.log("IMAP 접속 중 일시적 오류 발생, 다음 회차에 재시도합니다.");
     }
-
-    const lastMessage = messages[messages.length - 1];
-    const part = lastMessage.parts.find(p => p.which === "");
-    const mail = await simpleParser(part.body);
-    const text = mail.text || mail.html || "";
-    connection.end();
-
-    const match = text.match(/\b\d{6}\b/);
-    if (match) return match[0];
-    throw new Error("메일 본문에서 6자리 숫자를 찾지 못했습니다.");
-  } catch (err) {
-    throw new Error("IMAP 에러: " + err.message);
   }
+  throw new Error("❌ 인증 메일을 끝내 찾지 못했습니다. 11번가 전송 여부를 확인하세요.");
 }
 
-// ====== 1. 로그인 및 2단계 인증 돌파 (이메일 강제 선택 버전) ======
+// ====== 1. 로그인 및 2단계 인증 돌파 (최적화) ======
 async function loginAndSaveStorageState() {
   console.log("로봇이 11번가 자동 로그인을 시작합니다...");
   ensureDir(STORAGE_STATE_PATH);
@@ -137,58 +104,31 @@ async function loginAndSaveStorageState() {
     await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded", timeout: 60000 });
     await page.fill('input[name="loginName"], input[name="id"]', SELLER_ID);
     await page.fill('input[name="passWord"], input[name="pw"]', SELLER_PW);
+    await page.click('button:has-text("로그인")');
 
-    await Promise.all([
-      page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 60000 }).catch(() => {}),
-      page.click('button:has-text("로그인")').catch(() => {}),
-    ]);
-
-    // 2단계 인증 화면 감지
-    if (page.url().includes("otp") || await page.locator('text="로그인 2단계 인증"').isVisible()) {
+    if (await page.locator('text="로그인 2단계 인증"').isVisible({ timeout: 10000 })) {
       console.log("🔒 2단계 인증 화면 감지됨!");
-
-      // 1) 계정 선택 (정*라)
-      console.log("1단계: 첫 번째 계정(정*라)을 선택합니다.");
       await page.locator('#nldList_0, tr:has-text("정*라")').first().click({ force: true });
       await page.click('button:has-text("인증정보 선택하기")');
       await page.waitForTimeout(2000);
 
-      // 2) 이메일 옵션 강제 선택 (가장 중요!)
-      console.log("2단계: 카카오톡 대신 '이메일' 옵션을 강제로 선택합니다.");
-      // '이메일'이라는 글자가 있는 라벨이나 라디오 버튼을 직접 클릭
+      // 이메일 옵션 강제 선택
       await page.locator('label:has-text("이메일"), input[type="radio"]:near(:text("이메일"))').first().click({ force: true });
-      await page.waitForTimeout(1000);
-
-      // 3) 알림창 확인 대기 설정
-      page.once("dialog", async dialog => {
-        console.log(`🔔 11번가 알림: ${dialog.message()}`);
-        await dialog.accept();
-      });
-
-      // 4) 인증번호 전송 버튼 클릭
-      console.log("3단계: [인증번호 전송] 버튼을 클릭합니다.");
+      page.once("dialog", async d => await d.accept());
       await page.locator('button:has-text("인증번호 전송"):visible').first().click();
       
-      console.log("📧 메일함 확인 전 25초 대기 시작...");
-      await page.waitForTimeout(25000);
-      
-      const authCode = await getAuthCodeFromEmail();
+      // [수정] 25초 대기 대신 스마트 폴링 실행
+      const authCode = await getAuthCodeWithRetry();
       console.log(`✅ 가로챈 인증번호: ${authCode}`);
 
-      // 5) 인증번호 입력 및 최종 확인
-      const authInput = page.locator('input[type="text"]:visible, input[type="tel"]:visible').first();
-      await authInput.fill(authCode);
+      await page.fill('input[type="text"]:visible, input[type="tel"]:visible', authCode);
       await Promise.all([
-        page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 60000 }).catch(() => {}),
+        page.waitForNavigation({ waitUntil: "domcontentloaded" }),
         page.click('button:has-text("확인")')
       ]);
-      console.log("🔓 2단계 인증 돌파 성공!");
     }
-
-    await page.goto("https://soffice.11st.co.kr", { waitUntil: "domcontentloaded", timeout: 60000 });
+    await page.goto("https://soffice.11st.co.kr", { waitUntil: "domcontentloaded" });
     await context.storageState({ path: STORAGE_STATE_PATH });
-    console.log("자동 로그인 세션 저장 완료!");
-
   } finally {
     await context.close();
     await browser.close();
@@ -202,14 +142,11 @@ async function downloadExcelWithPlaywrightOnce() {
   const page = await context.newPage();
 
   try {
-    console.log("재고관리 화면으로 진입합니다...");
     await page.goto(TARGET_PAGE_URL, { waitUntil: "domcontentloaded", timeout: 60000 });
-
     if (page.url().includes("login")) throw new Error("HTML이 내려왔습니다 (세션 만료)");
 
     await page.click('button:has-text("검색")');
-    await page.waitForTimeout(3000);
-
+    await page.waitForTimeout(2000);
     const [download] = await Promise.all([
       page.waitForEvent("download", { timeout: 60000 }),
       page.click('button:has-text("엑셀다운로드")')
@@ -217,11 +154,13 @@ async function downloadExcelWithPlaywrightOnce() {
 
     ensureDir(DOWNLOAD_PATH);
     await download.saveAs(DOWNLOAD_PATH);
-    console.log("✅ 엑셀 다운로드 성공!");
-
+    const wb = XLSX.readFile(DOWNLOAD_PATH);
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: "" });
+    await upsertRowsToPostgres(rows);
+    
     await context.close();
     await browser.close();
-    return { filePath: DOWNLOAD_PATH };
+    return { ok: true, rowsCount: rows.length };
   } catch (error) {
     await context.close().catch(() => {});
     await browser.close().catch(() => {});
@@ -229,40 +168,25 @@ async function downloadExcelWithPlaywrightOnce() {
   }
 }
 
-async function downloadExcelWithPlaywright() {
-  if (!fs.existsSync(STORAGE_STATE_PATH)) await loginAndSaveStorageState();
-  try {
-    return await downloadExcelWithPlaywrightOnce();
-  } catch (e) {
-    if (String(e).includes("HTML이 내려왔습니다")) {
-      await loginAndSaveStorageState();
-      return await downloadExcelWithPlaywrightOnce(); 
-    }
-    throw e;
-  }
-}
-
-function parseExcel(filePath) {
-  const wb = XLSX.readFile(filePath);
-  const sheetName = wb.SheetNames[0];
-  const ws = wb.Sheets[sheetName];
-  return { sheetName, rowsCount: XLSX.utils.sheet_to_json(ws).length, rows: XLSX.utils.sheet_to_json(ws, { defval: "" }) };
-}
-
-app.get("/healthz", (req, res) => res.status(200).send("ok"));
-
 app.post("/run", async (req, res) => {
   try {
-    const startedAt = new Date().toISOString();
-    const dl = await downloadExcelWithPlaywright();
-    const parsed = parseExcel(dl.filePath);
-    const db = await upsertRowsToPostgres(parsed.rows);
-    res.json({ ok: true, startedAt, downloaded: dl, db });
+    if (!fs.existsSync(STORAGE_STATE_PATH)) await loginAndSaveStorageState();
+    let result;
+    try {
+      result = await downloadExcelWithPlaywrightOnce();
+    } catch (e) {
+      if (String(e).includes("세션 만료")) {
+        await loginAndSaveStorageState();
+        result = await downloadExcelWithPlaywrightOnce();
+      } else throw e;
+    }
+    res.json(result);
   } catch (e) {
     console.error("실행 중 에러 발생:", e);
     res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
 });
 
+app.get("/healthz", (req, res) => res.status(200).send("ok"));
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Playwright server listening on :${PORT}`));
