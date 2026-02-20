@@ -6,18 +6,16 @@ const XLSX = require("xlsx");
 const { Client } = require("pg");
 
 const app = express();
-app.use(express.json({ limit: "2mb" }));
+app.use(express.json({ limit: "5mb" }));
 
 // ====== 필수 환경변수 ======
-const DOWNLOAD_URL = process.env.DOWNLOAD_URL;
 const PG_URL = process.env.PG_URL || process.env.DATABASE_URL;
-const STORAGE_STATE_PATH = process.env.STORAGE_STATE_PATH || "/data/storageState.json";
-const DOWNLOAD_PATH = process.env.DOWNLOAD_PATH || "/data/stock.xlsx";
+const SAVED_COOKIES = process.env.SAVED_COOKIES; // Railway에 넣은 쿠키 JSON
+const DOWNLOAD_PATH = "/data/stock.xlsx";
 const UPSERT_TABLE = process.env.UPSERT_TABLE || "n_delivery_stock";
 
-const LOGIN_URL = process.env.LOGIN_URL;
-const SELLER_ID = process.env.SELLER_ID;
-const SELLER_PW = process.env.SELLER_PW;
+// 목표 페이지 URL (승환님이 주신 화면)
+const TARGET_PAGE_URL = "https://soffice.11st.co.kr/view/40394";
 
 const COL_SKU_CANDIDATES = ["SKU", "sku", "상품SKU", "SellerSKU", "판매자SKU", "옵션SKU"];
 const COL_QTY_CANDIDATES = ["재고", "재고수량", "수량", "재고수", "Stock", "stock_qty"];
@@ -62,10 +60,7 @@ async function upsertRowsToPostgres(rows) {
   const skuCol = pickCol(firstRow, COL_SKU_CANDIDATES);
   const qtyCol = pickCol(firstRow, COL_QTY_CANDIDATES);
 
-  if (!skuCol || !qtyCol) {
-    const sampleKeys = Object.keys(firstRow || {});
-    throw new Error(`엑셀 컬럼을 못 찾았습니다. skuCol=${skuCol}, qtyCol=${qtyCol}. 첫 행 컬럼들: ${sampleKeys.join(", ")}`);
-  }
+  if (!skuCol || !qtyCol) throw new Error(`엑셀 컬럼을 못 찾았습니다.`);
 
   const stmt = `
     INSERT INTO ${UPSERT_TABLE} (sku, stock_qty, updated_at)
@@ -91,79 +86,48 @@ async function upsertRowsToPostgres(rows) {
   return { inserted, skipped, skuCol, qtyCol };
 }
 
-// ====== 1. 자동 로그인 및 세션 저장 함수 ======
-async function loginAndSaveStorageState() {
-  console.log("자동 로그인을 시작합니다...");
-  if (!LOGIN_URL) throw new Error("LOGIN_URL 환경변수가 없습니다.");
-  if (!SELLER_ID) throw new Error("SELLER_ID 환경변수가 없습니다.");
-  if (!SELLER_PW) throw new Error("SELLER_PW 환경변수가 없습니다.");
+// ====== 핵심: 쿠키로 로그인 후 화면에서 버튼 클릭해서 다운로드 ======
+async function downloadExcelWithPlaywright() {
+  if (!SAVED_COOKIES) {
+    throw new Error("SAVED_COOKIES 환경변수가 없습니다. Cookie-Editor로 복사해서 Railway에 넣어주세요.");
+  }
 
-  ensureDir(STORAGE_STATE_PATH);
-
+  console.log("브라우저를 실행합니다...");
   const browser = await chromium.launch({
-    headless: true,
-    args: ["--no-sandbox", "--disable-dev-shm-usage"],
-  });
-
-  const context = await browser.newContext({ acceptDownloads: true });
-  const page = await context.newPage();
-
-  await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded", timeout: 60000 });
-
-  await page.fill('input[name="loginName"], input[name="id"], input[type="text"]', SELLER_ID);
-  await page.fill('input[name="passWord"], input[name="pw"], input[type="password"]', SELLER_PW);
-
-  await Promise.all([
-    page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 60000 }).catch(() => {}),
-    page.click('button[type="submit"], input[type="submit"], button:has-text("로그인")').catch(() => {}),
-  ]);
-
-  await page.goto("https://soffice.11st.co.kr", { waitUntil: "domcontentloaded", timeout: 60000 });
-
-  await context.storageState({ path: STORAGE_STATE_PATH });
-  console.log("자동 로그인 성공 및 세션 저장 완료!");
-
-  await context.close();
-  await browser.close();
-
-  return { saved: true, storageStatePath: STORAGE_STATE_PATH };
-}
-
-// ====== 2. 엑셀 다운로드 1회 시도 함수 (API 방식으로 완전 교체!) ======
-async function downloadExcelWithPlaywrightOnce() {
-  const browser = await chromium.launch({
-    headless: true,
+    headless: true, // 에러 추적 시 잠시 false로 변경 가능
     args: ["--no-sandbox", "--disable-dev-shm-usage"]
   });
 
-  const context = await browser.newContext({
-    storageState: STORAGE_STATE_PATH
-  });
+  const context = await browser.newContext({ acceptDownloads: true });
 
   try {
-    console.log("엑셀 다운로드를 요청합니다...");
+    // 1. 쿠키 세팅 (로그인 프리패스)
+    const cookies = JSON.parse(SAVED_COOKIES);
+    await context.addCookies(cookies);
+    console.log("쿠키 세팅 완료! 로그인 없이 곧바로 이동합니다.");
 
-    // 브라우저 화면을 띄워서 다운로드를 기다리지 않고, 
-    // 저장된 로그인 세션(쿠키)을 이용해 엑셀 파일을 백그라운드에서 직접 당겨옴 (충돌 방지 100%)
-    const response = await context.request.get(DOWNLOAD_URL, {
-      timeout: 60000,
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Referer": "https://soffice.11st.co.kr/"
-      }
-    });
+    const page = await context.newPage();
 
-    const ct = response.headers()["content-type"] || "";
-    if (ct.includes("text/html")) {
-      const html = await response.text();
-      throw new Error(`엑셀이 아니라 HTML이 내려왔습니다(세션 만료/차단 가능).\nHTML 일부: ${html.slice(0, 300)}`);
-    }
+    // 2. N배송 재고관리 화면으로 이동
+    console.log("재고 화면으로 이동 중...");
+    await page.goto(TARGET_PAGE_URL, { waitUntil: "domcontentloaded", timeout: 60000 });
 
-    // 정상 엑셀 파일인 경우 저장
-    const buffer = await response.body();
+    // 3. [검색] 버튼 클릭 및 로딩 대기
+    console.log("[검색] 버튼을 클릭합니다.");
+    await page.click('button:has-text("검색")');
+    await page.waitForTimeout(3000); // 검색 결과가 뜰 때까지 3초 대기
+
+    // 4. [엑셀다운로드] 버튼 클릭
+    console.log("[엑셀다운로드] 버튼을 클릭합니다.");
+    const [download] = await Promise.all([
+      page.waitForEvent('download', { timeout: 60000 }),
+      page.click('button:has-text("엑셀다운로드"), a:has-text("엑셀다운로드")')
+    ]);
+
+    // 5. 파일 저장
     ensureDir(DOWNLOAD_PATH);
-    fs.writeFileSync(DOWNLOAD_PATH, buffer);
-    console.log("엑셀 파일 다운로드 및 저장 성공!");
+    await download.saveAs(DOWNLOAD_PATH);
+    console.log("✅ 엑셀 파일 다운로드 및 저장 성공!");
 
     await context.close();
     await browser.close();
@@ -171,31 +135,10 @@ async function downloadExcelWithPlaywrightOnce() {
     return { filePath: DOWNLOAD_PATH };
 
   } catch (error) {
+    console.error("다운로드 중 에러 발생:", error);
     await context.close().catch(() => {});
     await browser.close().catch(() => {});
     throw error;
-  }
-}
-
-// ====== 3. 다운로드 실행 ======
-async function downloadExcelWithPlaywright() {
-  if (!DOWNLOAD_URL) throw new Error("DOWNLOAD_URL 환경변수가 없습니다.");
-
-  if (!fs.existsSync(STORAGE_STATE_PATH)) {
-    console.log("저장된 세션이 없습니다. 최초 로그인을 시도합니다.");
-    await loginAndSaveStorageState();
-  }
-
-  try {
-    return await downloadExcelWithPlaywrightOnce();
-  } catch (e) {
-    const msg = String(e?.message || e);
-    if (msg.includes("HTML이 내려왔습니다")) {
-      console.log("세션 만료가 감지되었습니다. 재로그인을 시도합니다...");
-      await loginAndSaveStorageState();
-      return await downloadExcelWithPlaywrightOnce(); 
-    }
-    throw e;
   }
 }
 
