@@ -170,12 +170,13 @@ async function loginAndSaveStorageState() {
       await dialog.accept();
     });
 
-    // 3) 이메일 선택 및 전송 버튼 클릭
+// 3) 이메일 선택 및 전송 버튼 클릭
     console.log("이메일 옵션을 선택합니다.");
     await page.locator('text="이메일"').first().click();
     
     console.log("[인증번호 전송] 버튼 클릭!");
-    await page.click('button:has-text("인증번호 전송")');
+    // 🔥 수정된 부분: 화면에 실제로 보이는 버튼만 클릭하도록 ':visible' 추가
+    await page.locator('button:has-text("인증번호 전송"):visible').first().click();
     console.log("📧 인증번호 전송 버튼 클릭 완료! 메일 도착을 15초간 대기합니다.");
 
     // 4) 15초 대기 후 이메일함에서 인증번호 빼오기
