@@ -1,8 +1,9 @@
-FROM n8nio/n8n:latest
+FROM mcr.microsoft.com/playwright:v1.41.2-jammy
 
-USER root
+# n8n 설치
+RUN npm install -g n8n
 
-RUN npm install -g playwright \
- && npx playwright install --with-deps chromium
+ENV N8N_PORT=5678
+EXPOSE 5678
 
-USER node
+CMD ["n8n", "start"]
