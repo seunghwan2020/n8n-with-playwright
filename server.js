@@ -15,7 +15,6 @@ const STORAGE_STATE_PATH = process.env.STORAGE_STATE_PATH || "/data/storageState
 const DOWNLOAD_PATH = process.env.DOWNLOAD_PATH || "/data/stock.xlsx";
 const UPSERT_TABLE = process.env.UPSERT_TABLE || "n_delivery_stock";
 
-// ====== 추가된 로그인용 환경변수 ======
 const LOGIN_URL = process.env.LOGIN_URL;
 const SELLER_ID = process.env.SELLER_ID;
 const SELLER_PW = process.env.SELLER_PW;
@@ -111,120 +110,9 @@ async function loginAndSaveStorageState() {
 
   await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded", timeout: 60000 });
 
-  // 11번가 로그인 폼 필드 입력 (이전 대화에서 찾았던 loginName, passWord 기준)
   await page.fill('input[name="loginName"], input[name="id"], input[type="text"]', SELLER_ID);
   await page.fill('input[name="passWord"], input[name="pw"], input[type="password"]', SELLER_PW);
 
   await Promise.all([
     page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 60000 }).catch(() => {}),
-    page.click('button[type="submit"], input[type="submit"], button:has-text("로그인")').catch(() => {}),
-  ]);
-
-  // 로그인 후 세션 안정화를 위해 메인 화면 한 번 거치기
-  await page.goto("https://soffice.11st.co.kr", { waitUntil: "domcontentloaded", timeout: 60000 });
-
-  // 쿠키 및 세션 저장
-  await context.storageState({ path: STORAGE_STATE_PATH });
-  console.log("자동 로그인 성공 및 세션 저장 완료!");
-
-  await context.close();
-  await browser.close();
-
-  return { saved: true, storageStatePath: STORAGE_STATE_PATH };
-}
-
-// ====== 2. 엑셀 다운로드 1회 시도 함수 ======
-async function downloadExcelWithPlaywrightOnce() {
-  const browser = await chromium.launch({
-    headless: true,
-    args: ["--no-sandbox", "--disable-dev-shm-usage"]
-  });
-
-  const context = await browser.newContext({
-    storageState: STORAGE_STATE_PATH,
-    acceptDownloads: true
-  });
-
-  const page = await context.newPage();
-
-  const downloadPromise = page.waitForEvent("download", { timeout: 60000 });
-  const resp = await page.goto(DOWNLOAD_URL, { waitUntil: "domcontentloaded", timeout: 60000 });
-
-  const ct = resp?.headers()?.["content-type"] || "";
-  if (ct.includes("text/html")) {
-    const html = await page.content();
-    await context.close();
-    await browser.close();
-    throw new Error(`엑셀이 아니라 HTML이 내려왔습니다(세션 만료/차단 가능). content-type=${ct}\nHTML 일부: ${html.slice(0, 200)}`);
-  }
-
-  const download = await downloadPromise;
-  ensureDir(DOWNLOAD_PATH);
-  await download.saveAs(DOWNLOAD_PATH);
-
-  await context.close();
-  await browser.close();
-
-  return { filePath: DOWNLOAD_PATH, suggestedName: download.suggestedFilename() };
-}
-
-// ====== 3. 다운로드 실행 (만료 시 재로그인 포함) ======
-async function downloadExcelWithPlaywright() {
-  if (!DOWNLOAD_URL) throw new Error("DOWNLOAD_URL 환경변수가 없습니다.");
-
-  // 세션 파일이 없으면 자동 로그인 먼저 실행
-  if (!fs.existsSync(STORAGE_STATE_PATH)) {
-    console.log("저장된 세션이 없습니다. 최초 로그인을 시도합니다.");
-    await loginAndSaveStorageState();
-  }
-
-  try {
-    return await downloadExcelWithPlaywrightOnce();
-  } catch (e) {
-    const msg = String(e?.message || e);
-    // 세션 만료로 인해 HTML 로그인 페이지가 내려온 경우
-    if (msg.includes("HTML이 내려왔습니다")) {
-      console.log("세션 만료 감지됨. 재로그인을 시도합니다...");
-      await loginAndSaveStorageState();
-      return await downloadExcelWithPlaywrightOnce(); // 재로그인 후 1회 다시 시도
-    }
-    throw e;
-  }
-}
-
-function parseExcel(filePath) {
-  const wb = XLSX.readFile(filePath);
-  const sheetName = wb.SheetNames[0];
-  const ws = wb.Sheets[sheetName];
-  const rows = XLSX.utils.sheet_to_json(ws, { defval: "" });
-  return { sheetName, rowsCount: rows.length, rows };
-}
-
-// ====== 라우트 ======
-app.get("/healthz", (req, res) => res.status(200).send("ok"));
-
-app.post("/run", async (req, res) => {
-  try {
-    const startedAt = new Date().toISOString();
-
-    const dl = await downloadExcelWithPlaywright();
-    const parsed = parseExcel(dl.filePath);
-    const db = await upsertRowsToPostgres(parsed.rows);
-
-    res.json({
-      ok: true,
-      startedAt,
-      downloaded: dl,
-      parsed: { sheetName: parsed.sheetName, rowsCount: parsed.rowsCount },
-      db
-    });
-  } catch (e) {
-    res.status(500).json({
-      ok: false,
-      error: String(e?.message || e)
-    });
-  }
-});
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Playwright server listening on :${PORT}`));
+    page.click('button[type="submit"], input[type="submit"], button:has-text("로그인")').catch
