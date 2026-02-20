@@ -1,0 +1,15 @@
+{
+  "name": "playwright-stock-downloader",
+  "version": "1.0.0",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "playwright": "^1.41.2",
+    "pg": "^8.11.5",
+    "xlsx": "^0.18.5"
+  }
+}
