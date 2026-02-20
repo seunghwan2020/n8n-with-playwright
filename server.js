@@ -86,7 +86,7 @@ async function upsertRowsToPostgres(rows) {
 
 // ====== 네이버 웍스 이메일에서 인증번호 6자리 추출 ======
 async function getAuthCodeFromEmail() {
-  console.log(`메일함(${EMAIL_USER}) 접속 시도 중...`);
+  console.log(`로봇이 메일함(${EMAIL_USER})에 접속하여 인증번호를 찾습니다...`);
   const config = {
     imap: {
       user: EMAIL_USER,
@@ -108,7 +108,7 @@ async function getAuthCodeFromEmail() {
 
     if (!messages || messages.length === 0) {
       connection.end();
-      throw new Error("새로운 인증 메일이 없습니다. 발송 주소와 환경변수를 확인하세요.");
+      throw new Error("❌ 새로운 인증 메일이 없습니다. 11번가에서 메일 발송이 안 된 것 같습니다.");
     }
 
     const lastMessage = messages[messages.length - 1];
@@ -119,13 +119,13 @@ async function getAuthCodeFromEmail() {
 
     const match = text.match(/\b\d{6}\b/);
     if (match) return match[0];
-    throw new Error("본문에서 6자리 숫자를 찾지 못했습니다.");
+    throw new Error("메일 본문에서 6자리 숫자를 찾지 못했습니다.");
   } catch (err) {
-    throw new Error("IMAP 메일 읽기 실패: " + err.message);
+    throw new Error("IMAP 에러: " + err.message);
   }
 }
 
-// ====== 1. 로그인 및 2단계 인증 돌파 (간소화 버전) ======
+// ====== 1. 로그인 및 2단계 인증 돌파 (이메일 강제 선택 버전) ======
 async function loginAndSaveStorageState() {
   console.log("로봇이 11번가 자동 로그인을 시작합니다...");
   ensureDir(STORAGE_STATE_PATH);
@@ -133,64 +133,78 @@ async function loginAndSaveStorageState() {
   const context = await browser.newContext({ acceptDownloads: true });
   const page = await context.newPage();
 
-  await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded", timeout: 60000 });
-  await page.fill('input[name="loginName"], input[name="id"]', SELLER_ID);
-  await page.fill('input[name="passWord"], input[name="pw"]', SELLER_PW);
+  try {
+    await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded", timeout: 60000 });
+    await page.fill('input[name="loginName"], input[name="id"]', SELLER_ID);
+    await page.fill('input[name="passWord"], input[name="pw"]', SELLER_PW);
 
-  await Promise.all([
-    page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 60000 }).catch(() => {}),
-    page.click('button:has-text("로그인")').catch(() => {}),
-  ]);
-
-  // 2단계 인증 감지
-  if (page.url().includes("otp") || await page.locator('text="로그인 2단계 인증"').isVisible()) {
-    console.log("🔒 2단계 인증 화면 감지됨!");
-
-    // 1) 첫 번째 계정(정*라) 선택 및 다음 이동
-    console.log("첫 번째 계정(nldList_0)을 선택하고 [인증정보 선택하기]를 누릅니다.");
-    await page.locator('#nldList_0, tr:has-text("정*라")').first().click({ force: true }).catch(() => {});
-    await page.click('button:has-text("인증정보 선택하기")');
-    
-    // 2) 자바스크립트 알림창("인증번호가 전송되었습니다") 자동 확인 처리 준비
-    page.once("dialog", async dialog => {
-      console.log(`알림창 자동 클릭: ${dialog.message()}`);
-      await dialog.accept();
-    });
-
-    // 3) 이메일 인증번호 전송 (옵션 선택 생략하고 바로 전송 버튼 클릭)
-    console.log("[인증번호 전송] 버튼을 바로 클릭합니다 (디폴트 옵션 사용).");
-    await page.locator('button:has-text("인증번호 전송"):visible').first().click();
-    
-    console.log("📧 메일 도착 대기 중 (25초)...");
-    await page.waitForTimeout(25000);
-    const authCode = await getAuthCodeFromEmail();
-    console.log(`✅ 가로챈 인증번호: ${authCode}`);
-
-    // 4) 인증번호 입력 및 최종 확인
-    const authInput = page.locator('input[type="text"]:visible, input[type="tel"]:visible').first();
-    await authInput.fill(authCode);
     await Promise.all([
       page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 60000 }).catch(() => {}),
-      page.click('button:has-text("확인")')
+      page.click('button:has-text("로그인")').catch(() => {}),
     ]);
-    console.log("🔓 2단계 인증 돌파 성공!");
+
+    // 2단계 인증 화면 감지
+    if (page.url().includes("otp") || await page.locator('text="로그인 2단계 인증"').isVisible()) {
+      console.log("🔒 2단계 인증 화면 감지됨!");
+
+      // 1) 계정 선택 (정*라)
+      console.log("1단계: 첫 번째 계정(정*라)을 선택합니다.");
+      await page.locator('#nldList_0, tr:has-text("정*라")').first().click({ force: true });
+      await page.click('button:has-text("인증정보 선택하기")');
+      await page.waitForTimeout(2000);
+
+      // 2) 이메일 옵션 강제 선택 (가장 중요!)
+      console.log("2단계: 카카오톡 대신 '이메일' 옵션을 강제로 선택합니다.");
+      // '이메일'이라는 글자가 있는 라벨이나 라디오 버튼을 직접 클릭
+      await page.locator('label:has-text("이메일"), input[type="radio"]:near(:text("이메일"))').first().click({ force: true });
+      await page.waitForTimeout(1000);
+
+      // 3) 알림창 확인 대기 설정
+      page.once("dialog", async dialog => {
+        console.log(`🔔 11번가 알림: ${dialog.message()}`);
+        await dialog.accept();
+      });
+
+      // 4) 인증번호 전송 버튼 클릭
+      console.log("3단계: [인증번호 전송] 버튼을 클릭합니다.");
+      await page.locator('button:has-text("인증번호 전송"):visible').first().click();
+      
+      console.log("📧 메일함 확인 전 25초 대기 시작...");
+      await page.waitForTimeout(25000);
+      
+      const authCode = await getAuthCodeFromEmail();
+      console.log(`✅ 가로챈 인증번호: ${authCode}`);
+
+      // 5) 인증번호 입력 및 최종 확인
+      const authInput = page.locator('input[type="text"]:visible, input[type="tel"]:visible').first();
+      await authInput.fill(authCode);
+      await Promise.all([
+        page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 60000 }).catch(() => {}),
+        page.click('button:has-text("확인")')
+      ]);
+      console.log("🔓 2단계 인증 돌파 성공!");
+    }
+
+    await page.goto("https://soffice.11st.co.kr", { waitUntil: "domcontentloaded", timeout: 60000 });
+    await context.storageState({ path: STORAGE_STATE_PATH });
+    console.log("자동 로그인 세션 저장 완료!");
+
+  } finally {
+    await context.close();
+    await browser.close();
   }
-
-  await page.goto("https://soffice.11st.co.kr", { waitUntil: "domcontentloaded", timeout: 60000 });
-  await context.storageState({ path: STORAGE_STATE_PATH });
-  console.log("자동 로그인 세션 저장 완료!");
-
-  await context.close();
-  await browser.close();
 }
 
+// ====== 2. UI 화면 엑셀 다운로드 ======
 async function downloadExcelWithPlaywrightOnce() {
   const browser = await chromium.launch({ headless: true, args: ["--no-sandbox", "--disable-dev-shm-usage"] });
   const context = await browser.newContext({ storageState: STORAGE_STATE_PATH, acceptDownloads: true });
   const page = await context.newPage();
 
   try {
+    console.log("재고관리 화면으로 진입합니다...");
     await page.goto(TARGET_PAGE_URL, { waitUntil: "domcontentloaded", timeout: 60000 });
+
     if (page.url().includes("login")) throw new Error("HTML이 내려왔습니다 (세션 만료)");
 
     await page.click('button:has-text("검색")');
