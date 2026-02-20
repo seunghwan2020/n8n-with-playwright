@@ -1,17 +1,15 @@
-FROM mcr.microsoft.com/playwright:v1.49.0-jammy
+FROM mcr.microsoft.com/playwright:v1.41.2-jammy
 
-USER root
+WORKDIR /app
 
-# Node 20.19+로 올리기 (NodeSource)
-RUN apt-get update \
-  && apt-get install -y curl ca-certificates \
-  && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
-  && apt-get install -y nodejs \
-  && node -v
+COPY package.json /app/package.json
+RUN npm install --omit=dev
 
-RUN npm install -g n8n
+COPY server.js /app/server.js
 
-ENV N8N_PORT=5678
-EXPOSE 5678
+ENV TZ=Asia/Seoul
+ENV PORT=3000
 
-CMD ["n8n", "start"]
+EXPOSE 3000
+
+CMD ["npm", "run", "start"]
