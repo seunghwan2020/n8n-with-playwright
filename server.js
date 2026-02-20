@@ -91,7 +91,7 @@ async function getAuthCodeFromEmail() {
     imap: {
       user: EMAIL_USER,
       password: EMAIL_PW,
-      host: "imap.worksmobile.com", // 네이버 웍스 전용 IMAP 서버
+      host: "imap.worksmobile.com",
       port: 993,
       tls: true,
       authTimeout: 15000,
@@ -103,14 +103,13 @@ async function getAuthCodeFromEmail() {
     const connection = await imaps.connect(config);
     await connection.openBox("INBOX");
 
-    // 가장 최근 안 읽은 메일 검색
     const searchCriteria = ["UNSEEN"];
     const fetchOptions = { bodies: [""], markSeen: true };
     const messages = await connection.search(searchCriteria, fetchOptions);
 
     if (!messages || messages.length === 0) {
       connection.end();
-      throw new Error("새로운 인증 메일이 없습니다.");
+      throw new Error("새로운 인증 메일이 없습니다. (메일 발송이 늦어지거나 IMAP 설정 확인 필요)");
     }
 
     const lastMessage = messages[messages.length - 1];
@@ -127,7 +126,7 @@ async function getAuthCodeFromEmail() {
   }
 }
 
-// ====== 1. 로그인 및 2단계 인증 돌파 ======
+// ====== 1. 로그인 및 2단계 인증 돌파 (ID 콕 집어서 선택 수정 완료) ======
 async function loginAndSaveStorageState() {
   console.log("로봇이 11번가 자동 로그인을 시작합니다...");
   if (!LOGIN_URL || !SELLER_ID || !SELLER_PW || !EMAIL_USER || !EMAIL_PW) {
@@ -152,11 +151,16 @@ async function loginAndSaveStorageState() {
   if (page.url().includes("otp") || await page.locator('text="로그인 2단계 인증"').isVisible()) {
     console.log("🔒 2단계 인증 화면 감지됨! 돌파를 시작합니다.");
     
-    // 1) 두 번째 계정(손*환) 텍스트를 직접 클릭! (숨겨진 라디오 버튼 대신)
-    console.log("두 번째 계정(손*환)을 선택합니다.");
-    await page.locator('text="손*환"').click();
+    // 1) 두 번째 계정(손*환)의 라디오 버튼 ID(#nldList_1)를 강제 선택 (스크린샷 기반 수정)
+    console.log("두 번째 계정(손*환, #nldList_1)을 콕 집어서 선택합니다.");
+    const targetRadio = page.locator('#nldList_1');
+    if (await targetRadio.count() > 0) {
+        await targetRadio.check({ force: true }); // 디자인에 가려져 있어도 강제로 체크
+    } else {
+        // ID를 못 찾을 경우 대비해 텍스트로 한 번 더 시도
+        await page.locator('text="손*환"').click();
+    }
     
-    // [인증정보 선택하기] 버튼 클릭 후 페이지 넘어가기를 확실히 기다림
     console.log("[인증정보 선택하기] 버튼 클릭!");
     await Promise.all([
       page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 60000 }).catch(() => {}),
@@ -164,23 +168,22 @@ async function loginAndSaveStorageState() {
     ]);
     console.log("인증수단 선택 화면으로 넘어갔습니다.");
 
-    // 2) 자바스크립트 알림창("인증번호가 전송되었습니다") 자동 확인 처리
+    // 2) 자바스크립트 알림창 자동 확인
     page.once("dialog", async dialog => {
       console.log(`알림창 자동 클릭: ${dialog.message()}`);
       await dialog.accept();
     });
 
-// 3) 이메일 선택 및 전송 버튼 클릭
+    // 3) 이메일 선택 및 전송 버튼 클릭
     console.log("이메일 옵션을 선택합니다.");
     await page.locator('text="이메일"').first().click();
     
     console.log("[인증번호 전송] 버튼 클릭!");
-    // 🔥 수정된 부분: 화면에 실제로 보이는 버튼만 클릭하도록 ':visible' 추가
     await page.locator('button:has-text("인증번호 전송"):visible').first().click();
-    console.log("📧 인증번호 전송 버튼 클릭 완료! 메일 도착을 15초간 대기합니다.");
+    console.log("📧 인증번호 전송 버튼 클릭 완료! 메일 도착을 20초간 대기합니다.");
 
-    // 4) 15초 대기 후 이메일함에서 인증번호 빼오기
-    await page.waitForTimeout(15000);
+    // 4) 20초 대기 후 이메일함에서 인증번호 빼오기 (대기 시간 조금 늘림)
+    await page.waitForTimeout(20000);
     const authCode = await getAuthCodeFromEmail();
     console.log(`✅ 가로챈 인증번호: ${authCode}`);
 
