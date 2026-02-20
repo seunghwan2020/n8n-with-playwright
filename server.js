@@ -125,7 +125,7 @@ async function getAuthCodeFromEmail() {
   }
 }
 
-// ====== 1. 로그인 및 2단계 인증 돌파 (Nuclear Option 적용) ======
+// ====== 1. 로그인 및 2단계 인증 돌파 (이중 검증 로직 적용) ======
 async function loginAndSaveStorageState() {
   console.log("로봇이 11번가 자동 로그인을 시작합니다...");
   if (!LOGIN_URL || !SELLER_ID || !SELLER_PW || !EMAIL_USER || !EMAIL_PW) {
@@ -147,42 +147,44 @@ async function loginAndSaveStorageState() {
   ]);
 
   if (page.url().includes("otp") || await page.locator('text="로그인 2단계 인증"').isVisible()) {
-    console.log("🔒 2단계 인증 화면 감지됨! 돌파를 시작합니다.");
-    
-    // 1) 계정 선택 (강력한 JavaScript 주입 방식)
-    console.log("두 번째 계정(손*환, #nldList_1) 강제 선택 중...");
-    
-    // UI가 나타날 때까지 최대 10초만 대기
-    await page.waitForSelector('#nldList_1', { state: 'attached', timeout: 10000 }).catch(() => {});
+    console.log("🔒 2단계 인증 화면 감지됨!");
 
-    await page.evaluate(() => {
-        // ID로 직접 체크박스 선택 (보이든 안 보이든 무관하게 동작)
-        const radio = document.querySelector('#nldList_1');
-        if (radio) {
-            radio.checked = true;
-            // 11번가 서버가 '선택됨'을 인지하도록 체인지 이벤트 발생
-            radio.dispatchEvent(new Event('change', { bubbles: true }));
-        }
-    });
-
-    // 안전장치: 화면상의 라벨도 한 번 클릭해줍니다.
-    await page.locator('label[for="nldList_1"]').click({ force: true }).catch(() => {});
+    // [중요] 손*환 님이 있는 행(tr)을 찾아서 그 행의 어느 곳이든(라벨, 칸 등) 강제로 클릭합니다.
+    const row = page.locator('tr:has-text("손*환")');
+    console.log("손*환 계정 행(Row)을 직접 클릭합니다...");
+    await row.click({ force: true });
     
+    // 안전장치: 라디오 버튼이 실제로 체크되었는지 확인합니다.
+    const isChecked = await page.isChecked('#nldList_1');
+    if (!isChecked) {
+        console.log("⚠️ 일반 클릭 실패, JavaScript 강제 체크를 시도합니다.");
+        await page.evaluate(() => {
+            const radio = document.querySelector('#nldList_1');
+            if (radio) {
+                radio.checked = true;
+                radio.click(); // 실제 클릭 이벤트 발생
+                radio.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+        });
+    }
+
     await page.waitForTimeout(1000); 
 
-    // 2) [인증정보 선택하기] 버튼 클릭
     console.log("[인증정보 선택하기] 버튼 클릭!");
     await Promise.all([
-      page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 60000 }).catch(() => {}),
+      page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 60000 }),
       page.click('button:has-text("인증정보 선택하기")')
     ]);
 
-    // 3) 알림창 확인
+    // 2) 자바스크립트 알림창 자동 확인
     page.once("dialog", async dialog => { await dialog.accept(); });
 
-    // 4) 이메일 선택 및 전송
-    console.log("이메일 옵션 선택 및 인증번호 전송...");
-    await page.locator('text="이메일"').first().click();
+    // 3) 이메일 옵션 선택 (여기서도 team.brand... 주소를 확인하고 클릭합니다)
+    console.log("이메일 옵션을 선택합니다...");
+    const emailOption = page.locator('tr:has-text("team.bra")');
+    await emailOption.click({ force: true });
+    
+    console.log("[인증번호 전송] 버튼 클릭!");
     await page.locator('button:has-text("인증번호 전송"):visible').first().click();
     
     console.log("📧 메일 도착 대기 중 (25초)...");
@@ -190,7 +192,7 @@ async function loginAndSaveStorageState() {
     const authCode = await getAuthCodeFromEmail();
     console.log(`✅ 가로챈 인증번호: ${authCode}`);
 
-    // 5) 번호 입력 및 확인
+    // 4) 번호 입력 및 확인
     const authInput = page.locator('input[type="text"]:visible, input[type="tel"]:visible').first();
     await authInput.fill(authCode);
     await Promise.all([
