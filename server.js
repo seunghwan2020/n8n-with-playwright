@@ -112,8 +112,8 @@ async function loginAndSaveStorageState() {
   await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded", timeout: 60000 });
 
   // 11번가 로그인 폼 필드 입력 (이전 대화에서 찾았던 loginName, passWord 기준)
-  await page.fill('input[name="loginName"], input[name="id"], input[type="text"]', "st11decurvin");
-  await page.fill('input[name="passWord"], input[name="pw"], input[type="password"]', "11qjsrk@");
+  await page.fill('input[name="loginName"], input[name="id"], input[type="text"]', SELLER_ID);
+  await page.fill('input[name="passWord"], input[name="pw"], input[type="password"]', SELLER_PW);
 
   await Promise.all([
     page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 60000 }).catch(() => {}),
