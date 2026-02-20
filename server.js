@@ -108,7 +108,7 @@ async function getAuthCodeFromEmail() {
 
     if (!messages || messages.length === 0) {
       connection.end();
-      throw new Error("새로운 인증 메일이 없습니다. 발송 주소를 다시 확인해 보세요.");
+      throw new Error("새로운 인증 메일이 없습니다. 발송 주소와 환경변수를 확인하세요.");
     }
 
     const lastMessage = messages[messages.length - 1];
@@ -125,7 +125,7 @@ async function getAuthCodeFromEmail() {
   }
 }
 
-// ====== 1. 로그인 및 2단계 인증 돌파 (첫 번째 계정 기본 사용) ======
+// ====== 1. 로그인 및 2단계 인증 돌파 (간소화 버전) ======
 async function loginAndSaveStorageState() {
   console.log("로봇이 11번가 자동 로그인을 시작합니다...");
   ensureDir(STORAGE_STATE_PATH);
@@ -142,33 +142,23 @@ async function loginAndSaveStorageState() {
     page.click('button:has-text("로그인")').catch(() => {}),
   ]);
 
+  // 2단계 인증 감지
   if (page.url().includes("otp") || await page.locator('text="로그인 2단계 인증"').isVisible()) {
-    console.log("🔒 2단계 인증 화면 감지됨! 첫 번째 계정으로 진행합니다.");
+    console.log("🔒 2단계 인증 화면 감지됨!");
 
-    // 첫 번째 계정(정*라, ID: nldList_0)은 보통 기본 선택이 되어 있습니다.
-    // 만약 안 되어 있을 경우를 대비해 확실히 한 번 클릭해 줍니다.
-    console.log("첫 번째 계정(nldList_0)을 명시적으로 클릭합니다.");
+    // 1) 첫 번째 계정(정*라) 선택 및 다음 이동
+    console.log("첫 번째 계정(nldList_0)을 선택하고 [인증정보 선택하기]를 누릅니다.");
     await page.locator('#nldList_0, tr:has-text("정*라")').first().click({ force: true }).catch(() => {});
+    await page.click('button:has-text("인증정보 선택하기")');
     
-    await page.waitForTimeout(1000); 
-
-    console.log("[인증정보 선택하기] 버튼 클릭!");
-    await Promise.all([
-      page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 60000 }),
-      page.click('button:has-text("인증정보 선택하기")')
-    ]);
-
-    // 알림창 자동 확인
-    page.once("dialog", async dialog => { await dialog.accept(); });
-
-    // 이메일 옵션 선택 (첫 번째 이메일 주소 확인)
-    console.log("첫 번째 이메일 옵션을 선택합니다...");
-    await page.locator('tr:has-text("conta")').first().click({ force: true }).catch(() => {
-        // 텍스트 기반 찾기 실패 시 첫 번째 라디오 버튼 클릭
-        return page.locator('input[type="radio"]').first().click({ force: true });
+    // 2) 자바스크립트 알림창("인증번호가 전송되었습니다") 자동 확인 처리 준비
+    page.once("dialog", async dialog => {
+      console.log(`알림창 자동 클릭: ${dialog.message()}`);
+      await dialog.accept();
     });
-    
-    console.log("[인증번호 전송] 버튼 클릭!");
+
+    // 3) 이메일 인증번호 전송 (옵션 선택 생략하고 바로 전송 버튼 클릭)
+    console.log("[인증번호 전송] 버튼을 바로 클릭합니다 (디폴트 옵션 사용).");
     await page.locator('button:has-text("인증번호 전송"):visible').first().click();
     
     console.log("📧 메일 도착 대기 중 (25초)...");
@@ -176,7 +166,7 @@ async function loginAndSaveStorageState() {
     const authCode = await getAuthCodeFromEmail();
     console.log(`✅ 가로챈 인증번호: ${authCode}`);
 
-    // 번호 입력 및 확인
+    // 4) 인증번호 입력 및 최종 확인
     const authInput = page.locator('input[type="text"]:visible, input[type="tel"]:visible').first();
     await authInput.fill(authCode);
     await Promise.all([
