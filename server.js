@@ -129,7 +129,7 @@ async function loginAndSaveStorageState() {
   return { saved: true, storageStatePath: STORAGE_STATE_PATH };
 }
 
-// ====== 2. 엑셀 다운로드 1회 시도 함수 (에러 방지 적용) ======
+// ====== 2. 엑셀 다운로드 1회 시도 함수 (API 방식으로 완전 교체!) ======
 async function downloadExcelWithPlaywrightOnce() {
   const browser = await chromium.launch({
     headless: true,
@@ -137,41 +137,40 @@ async function downloadExcelWithPlaywrightOnce() {
   });
 
   const context = await browser.newContext({
-    storageState: STORAGE_STATE_PATH,
-    acceptDownloads: true
+    storageState: STORAGE_STATE_PATH
   });
 
-  const page = await context.newPage();
-
   try {
-    const downloadPromise = page.waitForEvent("download", { timeout: 60000 });
-    
-    // 파일 다운로드 URL일 경우 발생하는 페이지 이동 에러 무시
-    const resp = await page.goto(DOWNLOAD_URL, { timeout: 60000 }).catch(e => {
-      console.log("다운로드 요청 완료 (페이지 열림 에러 무시됨)");
-      return null;
+    console.log("엑셀 다운로드를 요청합니다...");
+
+    // 브라우저 화면을 띄워서 다운로드를 기다리지 않고, 
+    // 저장된 로그인 세션(쿠키)을 이용해 엑셀 파일을 백그라운드에서 직접 당겨옴 (충돌 방지 100%)
+    const response = await context.request.get(DOWNLOAD_URL, {
+      timeout: 60000,
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Referer": "https://soffice.11st.co.kr/"
+      }
     });
 
-    if (resp) {
-      const ct = resp.headers()["content-type"] || "";
-      if (ct.includes("text/html")) {
-        const html = await page.content();
-        throw new Error(`엑셀이 아니라 HTML이 내려왔습니다(세션 만료/차단 가능). HTML 일부: ${html.slice(0, 200)}`);
-      }
+    const ct = response.headers()["content-type"] || "";
+    if (ct.includes("text/html")) {
+      const html = await response.text();
+      throw new Error(`엑셀이 아니라 HTML이 내려왔습니다(세션 만료/차단 가능).\nHTML 일부: ${html.slice(0, 300)}`);
     }
 
-    const download = await downloadPromise;
+    // 정상 엑셀 파일인 경우 저장
+    const buffer = await response.body();
     ensureDir(DOWNLOAD_PATH);
-    await download.saveAs(DOWNLOAD_PATH);
-    console.log("엑셀 다운로드 성공!");
+    fs.writeFileSync(DOWNLOAD_PATH, buffer);
+    console.log("엑셀 파일 다운로드 및 저장 성공!");
 
     await context.close();
     await browser.close();
 
-    return { filePath: DOWNLOAD_PATH, suggestedName: download.suggestedFilename() };
+    return { filePath: DOWNLOAD_PATH };
 
   } catch (error) {
-    // 에러 발생 시 메모리 누수 방지를 위해 브라우저 확실히 닫기
     await context.close().catch(() => {});
     await browser.close().catch(() => {});
     throw error;
@@ -192,7 +191,7 @@ async function downloadExcelWithPlaywright() {
   } catch (e) {
     const msg = String(e?.message || e);
     if (msg.includes("HTML이 내려왔습니다")) {
-      console.log("세션 만료 감지됨. 재로그인을 시도합니다...");
+      console.log("세션 만료가 감지되었습니다. 재로그인을 시도합니다...");
       await loginAndSaveStorageState();
       return await downloadExcelWithPlaywrightOnce(); 
     }
