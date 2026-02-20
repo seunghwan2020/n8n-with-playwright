@@ -102,14 +102,13 @@ async function getAuthCodeFromEmail() {
   try {
     const connection = await imaps.connect(config);
     await connection.openBox("INBOX");
-
     const searchCriteria = ["UNSEEN"];
     const fetchOptions = { bodies: [""], markSeen: true };
     const messages = await connection.search(searchCriteria, fetchOptions);
 
     if (!messages || messages.length === 0) {
       connection.end();
-      throw new Error("새로운 인증 메일이 없습니다. (메일 발송이 늦어지거나 IMAP 설정 확인 필요)");
+      throw new Error("새로운 인증 메일이 없습니다.");
     }
 
     const lastMessage = messages[messages.length - 1];
@@ -126,11 +125,11 @@ async function getAuthCodeFromEmail() {
   }
 }
 
-// ====== 1. 로그인 및 2단계 인증 돌파 (ID nldList_1 타겟팅 수정 완료) ======
+// ====== 1. 로그인 및 2단계 인증 돌파 (강화된 선택 로직) ======
 async function loginAndSaveStorageState() {
   console.log("로봇이 11번가 자동 로그인을 시작합니다...");
   if (!LOGIN_URL || !SELLER_ID || !SELLER_PW || !EMAIL_USER || !EMAIL_PW) {
-    throw new Error("필수 환경변수가 누락되었습니다. Railway Variables를 확인하세요.");
+    throw new Error("필수 환경변수가 누락되었습니다.");
   }
 
   ensureDir(STORAGE_STATE_PATH);
@@ -139,70 +138,52 @@ async function loginAndSaveStorageState() {
   const page = await context.newPage();
 
   await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded", timeout: 60000 });
-  await page.fill('input[name="loginName"], input[name="id"], input[type="text"]', SELLER_ID);
-  await page.fill('input[name="passWord"], input[name="pw"], input[type="password"]', SELLER_PW);
+  await page.fill('input[name="loginName"], input[name="id"]', SELLER_ID);
+  await page.fill('input[name="passWord"], input[name="pw"]', SELLER_PW);
 
   await Promise.all([
     page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 60000 }).catch(() => {}),
-    page.click('button[type="submit"], input[type="submit"], button:has-text("로그인")').catch(() => {}),
+    page.click('button:has-text("로그인")').catch(() => {}),
   ]);
 
-  // 2단계 인증 화면 감지
   if (page.url().includes("otp") || await page.locator('text="로그인 2단계 인증"').isVisible()) {
     console.log("🔒 2단계 인증 화면 감지됨! 돌파를 시작합니다.");
     
-    // 1) 승환님의 계정(손*환)인 nldList_1을 콕 집어서 강제 클릭
-    console.log("두 번째 계정(손*환, ID: nldList_1)을 선택합니다.");
+    // 1) 계정 선택 (ID 직접 체크 대신 텍스트 기반 클릭 사용)
+    console.log("두 번째 계정(손*환)을 선택합니다.");
+    // '손*환'이라는 텍스트가 포함된 행(tr)을 찾아 그 안의 라디오 버튼이나 라벨을 클릭합니다.
+    await page.locator('tr:has-text("손*환")').locator('label').first().click({ force: true });
     
-    // 라벨(Label) 클릭이 실제 라디오 버튼을 활성화하는 가장 확실한 방법입니다.
-    const targetLabel = page.locator('label[for="nldList_1"]');
-    if (await targetLabel.count() > 0) {
-        await targetLabel.click({ force: true });
-        console.log("ID nldList_1에 연결된 라벨 클릭 완료.");
-    } else {
-        // 만약 라벨을 못 찾을 경우 라디오 버튼 자체를 강제 체크
-        await page.check('#nldList_1', { force: true });
-        console.log("ID nldList_1 라디오 버튼 강제 체크 완료.");
-    }
-    
-    // 선택이 반영될 시간을 아주 잠깐(0.5초) 줍니다.
-    await page.waitForTimeout(500);
+    await page.waitForTimeout(1000); // 선택 반영 대기
 
+    // 2) [인증정보 선택하기] 버튼 클릭
     console.log("[인증정보 선택하기] 버튼 클릭!");
     await Promise.all([
       page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 60000 }).catch(() => {}),
-      page.click('button:has-text("인증정보 선택하기")')
+      page.click('button.button_style_01:has-text("인증정보 선택하기")') // 스크린샷의 클래스 적용
     ]);
-    console.log("인증수단 선택 화면으로 넘어갔습니다.");
 
-    // 2) 자바스크립트 알림창 자동 확인
-    page.once("dialog", async dialog => {
-      console.log(`알림창 자동 클릭: ${dialog.message()}`);
-      await dialog.accept();
-    });
+    // 3) 알림창 확인
+    page.once("dialog", async dialog => { await dialog.accept(); });
 
-    // 3) 이메일 선택 및 전송 버튼 클릭
-    console.log("이메일 옵션을 선택합니다.");
+    // 4) 이메일 선택 및 전송
+    console.log("이메일 옵션 선택 및 인증번호 전송...");
     await page.locator('text="이메일"').first().click();
-    
-    console.log("[인증번호 전송] 버튼 클릭!");
     await page.locator('button:has-text("인증번호 전송"):visible').first().click();
-    console.log("📧 인증번호 전송 버튼 클릭 완료! 메일 도착을 25초간 대기합니다.");
-
-    // 4) 25초 대기 후 이메일함에서 인증번호 빼오기 (대기 시간 넉넉히 연장)
+    
+    console.log("📧 메일 도착 대기 중 (25초)...");
     await page.waitForTimeout(25000);
     const authCode = await getAuthCodeFromEmail();
     console.log(`✅ 가로챈 인증번호: ${authCode}`);
 
-    // 5) 인증번호 빈칸에 입력 및 확인
+    // 5) 번호 입력 및 확인
     const authInput = page.locator('input[type="text"]:visible, input[type="tel"]:visible').first();
     await authInput.fill(authCode);
-    
     await Promise.all([
       page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 60000 }).catch(() => {}),
-      page.click('button:has-text("확인"), button:has-text("인증")')
+      page.click('button:has-text("확인")')
     ]);
-    console.log("🔓 2단계 인증 완벽하게 돌파 성공!");
+    console.log("🔓 2단계 인증 돌파 성공!");
   }
 
   await page.goto("https://soffice.11st.co.kr", { waitUntil: "domcontentloaded", timeout: 60000 });
@@ -213,28 +194,21 @@ async function loginAndSaveStorageState() {
   await browser.close();
 }
 
-// ====== 2. UI 화면 엑셀 다운로드 ======
 async function downloadExcelWithPlaywrightOnce() {
   const browser = await chromium.launch({ headless: true, args: ["--no-sandbox", "--disable-dev-shm-usage"] });
   const context = await browser.newContext({ storageState: STORAGE_STATE_PATH, acceptDownloads: true });
   const page = await context.newPage();
 
   try {
-    console.log("재고관리 화면으로 진입합니다...");
     await page.goto(TARGET_PAGE_URL, { waitUntil: "domcontentloaded", timeout: 60000 });
+    if (page.url().includes("login")) throw new Error("HTML이 내려왔습니다 (세션 만료)");
 
-    if (page.url().includes("login") || await page.locator('text="로그인"').isVisible()) {
-      throw new Error("HTML이 내려왔습니다 (세션 만료로 로그인 화면으로 튕김)");
-    }
-
-    console.log("[검색] 버튼을 누릅니다.");
     await page.click('button:has-text("검색")');
     await page.waitForTimeout(3000);
 
-    console.log("[엑셀다운로드] 버튼을 누릅니다.");
     const [download] = await Promise.all([
       page.waitForEvent("download", { timeout: 60000 }),
-      page.click('button:has-text("엑셀다운로드"), a:has-text("엑셀다운로드")')
+      page.click('button:has-text("엑셀다운로드")')
     ]);
 
     ensureDir(DOWNLOAD_PATH);
@@ -244,7 +218,6 @@ async function downloadExcelWithPlaywrightOnce() {
     await context.close();
     await browser.close();
     return { filePath: DOWNLOAD_PATH };
-
   } catch (error) {
     await context.close().catch(() => {});
     await browser.close().catch(() => {});
@@ -252,17 +225,12 @@ async function downloadExcelWithPlaywrightOnce() {
   }
 }
 
-// ====== 3. 실행 파이프라인 ======
 async function downloadExcelWithPlaywright() {
-  if (!fs.existsSync(STORAGE_STATE_PATH)) {
-    await loginAndSaveStorageState();
-  }
-
+  if (!fs.existsSync(STORAGE_STATE_PATH)) await loginAndSaveStorageState();
   try {
     return await downloadExcelWithPlaywrightOnce();
   } catch (e) {
     if (String(e).includes("HTML이 내려왔습니다")) {
-      console.log("세션 만료 감지됨. 재로그인을 시도합니다...");
       await loginAndSaveStorageState();
       return await downloadExcelWithPlaywrightOnce(); 
     }
@@ -277,7 +245,6 @@ function parseExcel(filePath) {
   return { sheetName, rowsCount: XLSX.utils.sheet_to_json(ws).length, rows: XLSX.utils.sheet_to_json(ws, { defval: "" }) };
 }
 
-// ====== 라우트 ======
 app.get("/healthz", (req, res) => res.status(200).send("ok"));
 
 app.post("/run", async (req, res) => {
@@ -286,8 +253,7 @@ app.post("/run", async (req, res) => {
     const dl = await downloadExcelWithPlaywright();
     const parsed = parseExcel(dl.filePath);
     const db = await upsertRowsToPostgres(parsed.rows);
-
-    res.json({ ok: true, startedAt, downloaded: dl, parsed: { rowsCount: parsed.rowsCount }, db });
+    res.json({ ok: true, startedAt, downloaded: dl, db });
   } catch (e) {
     console.error("실행 중 에러 발생:", e);
     res.status(500).json({ ok: false, error: String(e?.message || e) });
