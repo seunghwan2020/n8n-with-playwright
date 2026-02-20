@@ -148,18 +148,21 @@ async function loginAndSaveStorageState() {
     page.click('button[type="submit"], input[type="submit"], button:has-text("로그인")').catch(() => {}),
   ]);
 
-  // 2단계 인증 화면 감지 (보내주신 스크린샷 대응)
+  // 2단계 인증 화면 감지
   if (page.url().includes("otp") || await page.locator('text="로그인 2단계 인증"').isVisible()) {
     console.log("🔒 2단계 인증 화면 감지됨! 돌파를 시작합니다.");
     
-    // 1) 두 번째 계정(손*환) 선택
-    const accountRadios = page.locator('input[type="radio"]');
-    if (await accountRadios.count() >= 2) {
-      await accountRadios.nth(1).check();
-      console.log("두 번째 계정 라디오 버튼 선택 완료.");
-    }
-    await page.click('button:has-text("인증정보 선택하기")');
-    await page.waitForTimeout(2000);
+    // 1) 두 번째 계정(손*환) 텍스트를 직접 클릭! (숨겨진 라디오 버튼 대신)
+    console.log("두 번째 계정(손*환)을 선택합니다.");
+    await page.locator('text="손*환"').click();
+    
+    // [인증정보 선택하기] 버튼 클릭 후 페이지 넘어가기를 확실히 기다림
+    console.log("[인증정보 선택하기] 버튼 클릭!");
+    await Promise.all([
+      page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 60000 }).catch(() => {}),
+      page.click('button:has-text("인증정보 선택하기")')
+    ]);
+    console.log("인증수단 선택 화면으로 넘어갔습니다.");
 
     // 2) 자바스크립트 알림창("인증번호가 전송되었습니다") 자동 확인 처리
     page.once("dialog", async dialog => {
@@ -168,7 +171,10 @@ async function loginAndSaveStorageState() {
     });
 
     // 3) 이메일 선택 및 전송 버튼 클릭
-    await page.locator('text="이메일"').click();
+    console.log("이메일 옵션을 선택합니다.");
+    await page.locator('text="이메일"').first().click();
+    
+    console.log("[인증번호 전송] 버튼 클릭!");
     await page.click('button:has-text("인증번호 전송")');
     console.log("📧 인증번호 전송 버튼 클릭 완료! 메일 도착을 15초간 대기합니다.");
 
@@ -180,6 +186,7 @@ async function loginAndSaveStorageState() {
     // 5) 인증번호 빈칸에 입력 및 확인
     const authInput = page.locator('input[type="text"]:visible, input[type="tel"]:visible').first();
     await authInput.fill(authCode);
+    
     await Promise.all([
       page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 60000 }).catch(() => {}),
       page.click('button:has-text("확인"), button:has-text("인증")')
