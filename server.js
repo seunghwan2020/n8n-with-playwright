@@ -86,7 +86,7 @@ async function upsertRowsToPostgres(rows) {
 
 // ====== 네이버 웍스 이메일에서 인증번호 6자리 추출 ======
 async function getAuthCodeFromEmail() {
-  console.log("네이버 웍스 메일함 접속 시도 중...");
+  console.log(`메일함(${EMAIL_USER}) 접속 시도 중...`);
   const config = {
     imap: {
       user: EMAIL_USER,
@@ -108,7 +108,7 @@ async function getAuthCodeFromEmail() {
 
     if (!messages || messages.length === 0) {
       connection.end();
-      throw new Error("새로운 인증 메일이 없습니다.");
+      throw new Error("새로운 인증 메일이 없습니다. 발송 주소를 다시 확인해 보세요.");
     }
 
     const lastMessage = messages[messages.length - 1];
@@ -125,13 +125,9 @@ async function getAuthCodeFromEmail() {
   }
 }
 
-// ====== 1. 로그인 및 2단계 인증 돌파 (이중 검증 로직 적용) ======
+// ====== 1. 로그인 및 2단계 인증 돌파 (첫 번째 계정 기본 사용) ======
 async function loginAndSaveStorageState() {
   console.log("로봇이 11번가 자동 로그인을 시작합니다...");
-  if (!LOGIN_URL || !SELLER_ID || !SELLER_PW || !EMAIL_USER || !EMAIL_PW) {
-    throw new Error("필수 환경변수가 누락되었습니다.");
-  }
-
   ensureDir(STORAGE_STATE_PATH);
   const browser = await chromium.launch({ headless: true, args: ["--no-sandbox", "--disable-dev-shm-usage"] });
   const context = await browser.newContext({ acceptDownloads: true });
@@ -147,27 +143,13 @@ async function loginAndSaveStorageState() {
   ]);
 
   if (page.url().includes("otp") || await page.locator('text="로그인 2단계 인증"').isVisible()) {
-    console.log("🔒 2단계 인증 화면 감지됨!");
+    console.log("🔒 2단계 인증 화면 감지됨! 첫 번째 계정으로 진행합니다.");
 
-    // [중요] 손*환 님이 있는 행(tr)을 찾아서 그 행의 어느 곳이든(라벨, 칸 등) 강제로 클릭합니다.
-    const row = page.locator('tr:has-text("손*환")');
-    console.log("손*환 계정 행(Row)을 직접 클릭합니다...");
-    await row.click({ force: true });
+    // 첫 번째 계정(정*라, ID: nldList_0)은 보통 기본 선택이 되어 있습니다.
+    // 만약 안 되어 있을 경우를 대비해 확실히 한 번 클릭해 줍니다.
+    console.log("첫 번째 계정(nldList_0)을 명시적으로 클릭합니다.");
+    await page.locator('#nldList_0, tr:has-text("정*라")').first().click({ force: true }).catch(() => {});
     
-    // 안전장치: 라디오 버튼이 실제로 체크되었는지 확인합니다.
-    const isChecked = await page.isChecked('#nldList_1');
-    if (!isChecked) {
-        console.log("⚠️ 일반 클릭 실패, JavaScript 강제 체크를 시도합니다.");
-        await page.evaluate(() => {
-            const radio = document.querySelector('#nldList_1');
-            if (radio) {
-                radio.checked = true;
-                radio.click(); // 실제 클릭 이벤트 발생
-                radio.dispatchEvent(new Event('change', { bubbles: true }));
-            }
-        });
-    }
-
     await page.waitForTimeout(1000); 
 
     console.log("[인증정보 선택하기] 버튼 클릭!");
@@ -176,13 +158,15 @@ async function loginAndSaveStorageState() {
       page.click('button:has-text("인증정보 선택하기")')
     ]);
 
-    // 2) 자바스크립트 알림창 자동 확인
+    // 알림창 자동 확인
     page.once("dialog", async dialog => { await dialog.accept(); });
 
-    // 3) 이메일 옵션 선택 (여기서도 team.brand... 주소를 확인하고 클릭합니다)
-    console.log("이메일 옵션을 선택합니다...");
-    const emailOption = page.locator('tr:has-text("team.bra")');
-    await emailOption.click({ force: true });
+    // 이메일 옵션 선택 (첫 번째 이메일 주소 확인)
+    console.log("첫 번째 이메일 옵션을 선택합니다...");
+    await page.locator('tr:has-text("conta")').first().click({ force: true }).catch(() => {
+        // 텍스트 기반 찾기 실패 시 첫 번째 라디오 버튼 클릭
+        return page.locator('input[type="radio"]').first().click({ force: true });
+    });
     
     console.log("[인증번호 전송] 버튼 클릭!");
     await page.locator('button:has-text("인증번호 전송"):visible').first().click();
@@ -192,7 +176,7 @@ async function loginAndSaveStorageState() {
     const authCode = await getAuthCodeFromEmail();
     console.log(`✅ 가로챈 인증번호: ${authCode}`);
 
-    // 4) 번호 입력 및 확인
+    // 번호 입력 및 확인
     const authInput = page.locator('input[type="text"]:visible, input[type="tel"]:visible').first();
     await authInput.fill(authCode);
     await Promise.all([
