@@ -125,7 +125,7 @@ async function getAuthCodeFromEmail() {
   }
 }
 
-// ====== 1. 로그인 및 2단계 인증 돌파 (강화된 선택 로직) ======
+// ====== 1. 로그인 및 2단계 인증 돌파 (Nuclear Option 적용) ======
 async function loginAndSaveStorageState() {
   console.log("로봇이 11번가 자동 로그인을 시작합니다...");
   if (!LOGIN_URL || !SELLER_ID || !SELLER_PW || !EMAIL_USER || !EMAIL_PW) {
@@ -149,18 +149,32 @@ async function loginAndSaveStorageState() {
   if (page.url().includes("otp") || await page.locator('text="로그인 2단계 인증"').isVisible()) {
     console.log("🔒 2단계 인증 화면 감지됨! 돌파를 시작합니다.");
     
-    // 1) 계정 선택 (ID 직접 체크 대신 텍스트 기반 클릭 사용)
-    console.log("두 번째 계정(손*환)을 선택합니다.");
-    // '손*환'이라는 텍스트가 포함된 행(tr)을 찾아 그 안의 라디오 버튼이나 라벨을 클릭합니다.
-    await page.locator('tr:has-text("손*환")').locator('label').first().click({ force: true });
+    // 1) 계정 선택 (강력한 JavaScript 주입 방식)
+    console.log("두 번째 계정(손*환, #nldList_1) 강제 선택 중...");
     
-    await page.waitForTimeout(1000); // 선택 반영 대기
+    // UI가 나타날 때까지 최대 10초만 대기
+    await page.waitForSelector('#nldList_1', { state: 'attached', timeout: 10000 }).catch(() => {});
+
+    await page.evaluate(() => {
+        // ID로 직접 체크박스 선택 (보이든 안 보이든 무관하게 동작)
+        const radio = document.querySelector('#nldList_1');
+        if (radio) {
+            radio.checked = true;
+            // 11번가 서버가 '선택됨'을 인지하도록 체인지 이벤트 발생
+            radio.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+    });
+
+    // 안전장치: 화면상의 라벨도 한 번 클릭해줍니다.
+    await page.locator('label[for="nldList_1"]').click({ force: true }).catch(() => {});
+    
+    await page.waitForTimeout(1000); 
 
     // 2) [인증정보 선택하기] 버튼 클릭
     console.log("[인증정보 선택하기] 버튼 클릭!");
     await Promise.all([
       page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 60000 }).catch(() => {}),
-      page.click('button.button_style_01:has-text("인증정보 선택하기")') // 스크린샷의 클래스 적용
+      page.click('button:has-text("인증정보 선택하기")')
     ]);
 
     // 3) 알림창 확인
