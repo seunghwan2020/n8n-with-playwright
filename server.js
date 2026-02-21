@@ -13,7 +13,6 @@ const NAVER_PW = process.env['EMAIL_PW'];
 
 let globalBrowser = null;
 let globalPage = null;
-// 🌟 방어막 1: 인증번호를 요청한 시간을 기억할 변수 추가
 let globalOtpRequestTime = 0; 
 
 async function getAuthCodeFromMail() {
@@ -37,15 +36,13 @@ async function getAuthCodeFromMail() {
 
             if (message && message.source) {
                 const mail = await simpleParser(message.source);
-                
-                // 🌟 방어막 1 작동: 메일 도착 시간이 인증 버튼 누른 시간보다 과거면 무시!
                 const mailDate = mail.date ? mail.date.getTime() : 0;
+                
                 if (mailDate < globalOtpRequestTime) {
                     console.log('📍 옛날 메일이 발견되었습니다. 새 메일을 기다립니다...');
                     return null; 
                 }
 
-                // 🌟 방어막 2 작동: 메일을 성공적으로 읽었으면 '읽음' 처리해서 지워버리기
                 await client.messageFlagsAdd(latestSeq, ['\\Seen']);
 
                 const mailText = mail.text || mail.html;
@@ -98,7 +95,6 @@ app.post('/execute', async (req, res) => {
                 await globalPage.click('label[for="auth_type_02"]'); 
                 await globalPage.waitForTimeout(1000); 
                 
-                // 🌟 방어막 1 세팅: 버튼 누르기 직전에 현재 시간을 기록 (서버 시간차 고려 1분 여유)
                 globalOtpRequestTime = Date.now() - 60000; 
                 
                 await globalPage.click('button:has-text("인증번호 전송"):visible'); 
@@ -107,12 +103,26 @@ app.post('/execute', async (req, res) => {
                 return res.json({ status: 'AUTH_REQUIRED', message: '인증 메일 발송 완료. 대기실에서 대기 중...' });
             }
 
-            return res.json({ status: 'SUCCESS', message: '로그인 성공 (인증 불필요)' });
+            // 2차 인증 화면이 안 떴을 경우 바로 로그인 성공 처리
+            const currentUrl = globalPage.url();
+            return res.json({ status: 'SUCCESS', message: '로그인 성공 (2차 인증 생략됨)', url: currentUrl });
         }
 
         if (action === 'verify_auto') {
             if (!globalPage) return res.status(400).json({ status: 'ERROR', message: '먼저 login을 실행해주세요.' });
             
+            // 🌟 [핵심 방어 코드 1] 이미 메인 화면(로그인 완료)인지 확인
+            const currentUrl = globalPage.url();
+            if (currentUrl.includes('soffice.11st.co.kr')) {
+                return res.json({ status: 'SUCCESS', message: '이미 11번가 메인 화면에 접속해 있습니다 (인증 불필요)', url: currentUrl });
+            }
+
+            // 🌟 [핵심 방어 코드 2] 화면에 진짜로 인증번호 입력칸이 있는지 확인
+            const isInputReady = await globalPage.isVisible('#auth_num_email');
+            if (!isInputReady) {
+                return res.json({ status: 'CHECK_REQUIRED', message: '인증번호 입력창이 없습니다. 캡차 등 다른 화면일 수 있습니다.', url: currentUrl });
+            }
+
             console.log('📍 네이버웍스 메일 확인 중...');
             const code = await getAuthCodeFromMail();
 
@@ -126,8 +136,8 @@ app.post('/execute', async (req, res) => {
             
             await globalPage.waitForTimeout(5000); 
 
-            const currentUrl = globalPage.url();
-            return res.json({ status: 'SUCCESS', message: '최종 로그인 완벽 성공!', url: currentUrl });
+            const finalUrl = globalPage.url();
+            return res.json({ status: 'SUCCESS', message: '최종 로그인 완벽 성공!', url: finalUrl });
         }
 
     } catch (error) {
