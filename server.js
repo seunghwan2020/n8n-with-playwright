@@ -29,53 +29,49 @@ app.post('/scrape-naver-inventory', async (req, res) => {
         console.log('📍 [STEP 2] 브라우저 실행 성공! 새 탭을 엽니다...');
         const context = await browser.newContext({
             userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            viewport: { width: 1280, height: 720 } // 화면을 넉넉하게 렌더링하여 버튼 가림 방지
+            viewport: { width: 1280, height: 720 } 
         }); 
         
         const page = await context.newPage();
 
         console.log('📍 [STEP 3] 네이버 로그인 페이지 접속 시도 중...');
         await page.goto('https://sell.smartstore.naver.com/#/login', { 
-            waitUntil: 'networkidle', // 렌더링이 완전히 끝날 때까지 대기
+            waitUntil: 'networkidle', 
             timeout: 60000 
         });
 
         console.log('📍 [STEP 4] 네이버 페이지 접속 완료! ID/PW 입력을 시작합니다...');
         
-        // React 프레임워크가 값을 확실히 인식하도록 type 대신 확실한 fill 명령과 click을 혼합 사용
+        // 💡 1. 봇 탐지 우회를 위해 사람처럼 클릭하고 한 글자씩 타이핑합니다 (pressSequentially 사용)
         const idInput = page.locator('input[placeholder="아이디 또는 이메일 주소"]');
         await idInput.waitFor({ state: 'visible' });
-        await idInput.click();
-        await idInput.fill(NAV_USER);
+        await idInput.click({ delay: 50 });
+        await idInput.pressSequentially(NAV_USER, { delay: 150 }); 
 
         const pwInput = page.locator('input[placeholder="비밀번호"]');
-        await pwInput.click();
-        await pwInput.fill(NAV_PW);
+        await pwInput.click({ delay: 50 });
+        await pwInput.pressSequentially(NAV_PW, { delay: 150 });
 
         console.log('📍 [STEP 4-1] 로그인 버튼 클릭');
-        // 로그인 클릭 후 페이지 전환이 일어나는지 감지
-        await Promise.all([
-            page.waitForURL('**/login-callback**', { timeout: 10000 }).catch(() => {}), 
-            page.click('button:has-text("로그인")', { force: true })
-        ]);
+        const loginBtn = page.locator('button').filter({ hasText: /^로그인$/ }).first();
+        await loginBtn.click({ delay: 100 });
 
-        // 네이버 서버 응답 렌더링 대기 (5초 강제 대기)
+        // 네이버 서버 응답 및 페이지 전환을 위해 5초 대기
         await page.waitForTimeout(5000);
 
         console.log(`📍 [STEP 5] 클릭 후 현재 페이지 URL: ${page.url()}`);
 
-        // 여전히 로그인 페이지에 갇혀 있다면 원인 정밀 분석
-        if (page.url().includes('login') && !page.url().includes('login-callback')) {
-            console.log('⚠️ 경고: 로그인에 실패했습니다. 원인을 분석합니다...');
-            const bodyText = await page.locator('body').innerText();
-
-            if (bodyText.includes('자동입력 방지문자') || bodyText.includes('캡차')) {
-                throw new Error('CAPTCHA_DETECTED: 네이버가 클라우드 IP를 차단하여 보안문자(Captcha)를 요구하고 있습니다.');
-            } else if (bodyText.includes('잘못 입력') || bodyText.includes('확인해 주세요')) {
-                throw new Error('AUTH_FAILED: 아이디 또는 비밀번호가 틀렸습니다. (입력값 오류)');
-            } else {
-                throw new Error(`UNKNOWN_LOGIN_ERROR: 알 수 없는 이유로 로그인 실패. 화면 텍스트 일부: ${bodyText.substring(0, 100)}`);
-            }
+        // 💡 2. URL 꼼수가 아닌, 실제로 비밀번호 입력창이 아직도 화면에 있는지(로그인 실패) 확인합니다.
+        const isStillOnLoginPage = await pwInput.isVisible().catch(() => false);
+        
+        if (isStillOnLoginPage) {
+            console.log('⚠️ 경고: 로그인에 실패하여 아직 로그인 화면에 갇혀있습니다!');
+            
+            // 네이버가 화면에 띄운 에러 텍스트(캡차, 비번 오류 등)를 모두 긁어서 출력합니다.
+            const errorText = await page.evaluate(() => document.body.innerText);
+            console.log(`[네이버 화면 에러 내용]: \n${errorText.substring(0, 300)}...`);
+            
+            throw new Error('LOGIN_FAILED: 로그인을 통과하지 못했습니다. Railway 로그의 [네이버 화면 에러 내용]을 확인해 주세요.');
         }
 
         console.log('🔒 2단계 인증 화면 감지 및 처리 대기...');
@@ -83,7 +79,7 @@ app.post('/scrape-naver-inventory', async (req, res) => {
             await page.waitForSelector('text=인증정보 선택하기', { timeout: 5000 });
             console.log('🔒 2단계 인증 화면 감지됨! [인증정보 선택하기] 버튼 클릭!');
             await page.click('text=인증정보 선택하기');
-            await page.waitForTimeout(3000); // 클릭 후 전환 대기
+            await page.waitForTimeout(3000); 
         } catch (e) {
             console.log('2단계 인증 화면이 없거나 이미 통과했습니다.');
         }
@@ -97,7 +93,7 @@ app.post('/scrape-naver-inventory', async (req, res) => {
         console.log(`📍 이동된 재고 페이지 URL: ${page.url()}`);
 
         console.log('📍 [STEP 7] 검색 버튼 클릭 및 결과 대기...');
-        const searchBtn = page.locator('button', { hasText: /^검색$/ }).first();
+        const searchBtn = page.locator('button').filter({ hasText: /^검색$/ }).first();
         await searchBtn.waitFor({ state: 'visible', timeout: 15000 });
         await searchBtn.click();
 
