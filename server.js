@@ -1,75 +1,98 @@
 const express = require('express');
-const { chromium } = require('playwright');
-const app = express();
+const { chromium } = require('playwright-extra');
+const stealth = require('puppeteer-extra-plugin-stealth')();
 
+// 봇 탐지 우회 플러그인 적용
+chromium.use(stealth);
+
+const app = express();
 app.use(express.json());
 
-app.post('/run', async (req, res) => {
-    const { target, id, pw } = req.body; 
-    let step = "시작 전"; // 현재 진행 단계를 저장할 변수
-    
-    if (target === 'naver_inventory') {
-        let browser;
+app.post('/scrape-naver-inventory', async (req, res) => {
+    // Railway에 설정한 환경 변수 불러오기
+    const NAV_USER = process.env.NAV_USER;
+    const NAV_PW = process.env.NAV_PW;
+
+    // 환경 변수 누락 체크
+    if (!NAV_USER || !NAV_PW) {
+        console.error('환경 변수 오류: NAV_USER 또는 NAV_PW가 설정되지 않았습니다.');
+        return res.status(500).json({ error: '서버에 네이버 계정 환경 변수가 누락되었습니다.' });
+    }
+
+    let browser;
+
+    try {
+        console.log('Starting Container');
+        console.log('로봇이 네이버 스마트스토어 자동 로그인을 시작합니다...');
+        
+        browser = await chromium.launch({ 
+            headless: true, // Railway 환경에서는 반드시 true
+            args: ['--no-sandbox', '--disable-setuid-sandbox'] 
+        });
+        const context = await browser.newContext();
+        const page = await context.newPage();
+
+        // 1. 로그인 페이지 이동
+        await page.goto('https://sell.smartstore.naver.com/#/login', { waitUntil: 'networkidle' });
+
+        // 로그인 정보 입력 (Railway 환경 변수 사용)
+        // 주의: 네이버 로그인 폼의 실제 HTML 태그 id나 name에 맞춰 셀렉터를 수정해야 할 수 있습니다.
+        await page.fill('#username_selector', NAV_USER); 
+        await page.fill('#password_selector', NAV_PW);
+        await page.click('#login_button_selector');
+
+        // 2. 🔒 2단계 인증 화면 감지 및 처리
         try {
-            step = "브라우저 실행 중 (버전 확인)";
-            browser = await chromium.launch({ args: ['--no-sandbox', '--disable-setuid-sandbox'] });
-            const context = await browser.newContext();
-            const page = await context.newPage();
+            // 인증 화면이 뜨는지 최대 5초간 대기
+            await page.waitForSelector('text=인증정보 선택하기', { timeout: 5000 });
+            console.log('🔒 2단계 인증 화면 감지됨!');
             
-            step = "네이버 로그인 페이지 이동";
-            console.log(step);
-            await page.goto('https://accounts.commerce.naver.com/login?url=https%3A%2F%2Fsell.smartstore.naver.com%2F%23%2Flogin-callback');
-
-            step = "아이디/비밀번호 입력 및 로그인 버튼 클릭";
-            console.log(step);
-            await page.evaluate(({naverId, naverPw}) => {
-                document.querySelector('input[name="id"]').value = naverId;
-                document.querySelector('input[name="pw"]').value = naverPw;
-            }, { naverId: id, naverPw: pw });
-            await page.click('button[type="submit"]');
-
-            step = "2단계 인증 화면 체크";
-            console.log(step);
-            const isTwoFactorScreen = await page.locator('text=인증정보 선택하기').isVisible({ timeout: 5000 }).catch(() => false);
-
-            if (isTwoFactorScreen) {
-                step = "2단계 인증 화면 통과 시도";
-                console.log(step);
-                await page.click('button:has-text("인증정보 선택하기")');
-                await page.waitForTimeout(3000); 
-            }
-
-            step = "N배송 재고관리 페이지로 이동";
-            console.log(step);
-            await page.goto('https://sell.smartstore.naver.com/#/logistics/sku-management/information');
+            // 옵션을 건드리지 않고 디폴트 상태에서 버튼만 명시적으로 클릭
+            console.log('[인증정보 선택하기] 버튼 클릭!');
+            await page.click('text=인증정보 선택하기');
             
-            step = "검색 버튼 클릭 대기";
-            console.log(step);
-            await page.waitForSelector('.css-v3t7n8');
-            await page.click('button:has-text("검색")');
+            // 인증번호 입력 대기 등 추가 로직이 필요하다면 여기에 작성
             
-            step = "데이터 로딩 대기";
-            console.log(step);
-            await page.waitForTimeout(3000); 
-
-            await browser.close();
-            res.json({ success: true, message: "로그인 및 검색까지 완벽하게 성공했습니다!" });
-
-        } catch (error) {
-            // 에러가 났을 때, 브라우저가 열려있으면 강제 종료
-            if (browser) await browser.close();
-            
-            // n8n으로 "어느 단계에서" 에러가 났는지 친절하게 한글로 보냄
-            console.error(`[에러 발생 단계: ${step}]`, error.message);
-            res.status(500).json({ 
-                success: false, 
-                failed_step: step, 
-                error_detail: error.message 
-            });
+        } catch (e) {
+            console.log('2단계 인증 화면이 없거나 이미 통과했습니다.');
         }
-    } else {
-        res.status(400).json({ error: '알 수 없는 target 입니다.' });
+
+        // 3. 재고 페이지 이동 및 데이터 크롤링 
+        // await page.goto('N배송_재고관리_페이지_URL');
+        // const rawData = await page.$$eval('table tr', rows => { ... });
+
+        // 4. PostgreSQL 저장용 정제 데이터 
+        // D.CURVIN 여행용 캐리어 라인업에 맞춘 테스트 데이터 예시입니다.
+        // 불필요한 객체 래핑 없이 바로 배열로 구성합니다.
+        const cleanedData = [
+            { 
+                sku_id: 'DCURVIN-BLK-20', 
+                n_delivery_stock: 150, 
+                sales_count: 12 
+            },
+            { 
+                sku_id: 'DCURVIN-SLV-24', 
+                n_delivery_stock: 85, 
+                sales_count: 5 
+            }
+        ];
+
+        // n8n에서 쓸데없는 구조 없이 바로 Item으로 쓸 수 있도록 배열 자체를 리턴합니다.
+        // n8n의 HTTP Request 노드 설정에서 'Response Format'을 'JSON'으로 두면 깔끔하게 파싱됩니다.
+        res.status(200).json(cleanedData);
+
+    } catch (error) {
+        console.error('크롤링 에러 발생:', error);
+        res.status(500).json({ error: error.message });
+    } finally {
+        if (browser) {
+            await browser.close();
+            console.log('브라우저 정상 종료 완료.');
+        }
     }
 });
 
-app.listen(8080, () => console.log('서버가 8080 포트에서 실행 대기 중입니다.'));
+const PORT = process.env.PORT || 8080;
+app.listen(PORT, () => {
+    console.log(`Playwright server listening on :${PORT}`);
+});
