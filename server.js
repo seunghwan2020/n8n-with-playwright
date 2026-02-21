@@ -146,8 +146,8 @@ app.post('/execute', async (req, res) => {
                 console.log('\n📍 [SCRAPE STEP 1] 재고 페이지로 이동합니다...');
                 await globalPage.goto('https://soffice.11st.co.kr/view/40394', { waitUntil: 'domcontentloaded', timeout: 30000 });
                 
-                console.log('📍 [SCRAPE STEP 2] 화면 로딩 대기...');
-                await globalPage.waitForTimeout(6000); 
+                console.log('📍 [SCRAPE STEP 2] 껍데기가 다 열릴 때까지 8초 대기...');
+                await globalPage.waitForTimeout(8000); 
 
                 console.log('📍 [SCRAPE STEP 3] 프레임 탐색 시작!');
                 let targetFrame = null;
@@ -156,8 +156,7 @@ app.post('/execute', async (req, res) => {
                     const frames = globalPage.frames();
                     for (const frame of frames) {
                         try {
-                            const btnCount = await frame.locator('#btnSearch').count();
-                            if (btnCount > 0) {
+                            if (await frame.locator('#btnSearch').count() > 0) {
                                 targetFrame = frame;
                                 break;
                             }
@@ -169,18 +168,24 @@ app.post('/execute', async (req, res) => {
 
                 if (!targetFrame) throw new Error('검색 버튼을 찾지 못했습니다.');
 
-                console.log('📍 [SCRAPE STEP 4] 검색 버튼 클릭!');
+                console.log('📍 [SCRAPE STEP 4] 검색 버튼 확실하게 클릭하기! (사람처럼 꾹 누르기)');
                 try {
-                    await targetFrame.click('#btnSearch', { force: true, timeout: 5000 });
+                    // 🌟 핵심 변경: 0.2초 동안 꾹 눌러서 클릭 무시 방지
+                    await targetFrame.locator('#btnSearch').click({ force: true, delay: 200, timeout: 5000 });
                 } catch (clickErr) {
                     await targetFrame.evaluate(() => document.querySelector('#btnSearch').click());
                 }
                 
-                console.log('📍 [SCRAPE STEP 5] 데이터 로딩 대기...');
+                console.log('📍 [SCRAPE STEP 5] 서버에서 표를 그려줄 때까지 스마트 대기...');
+                try {
+                    // 빈칸이 아닌 진짜 데이터 행이 DOM에 붙을 때까지 최대 10초 대기
+                    await targetFrame.waitForSelector('div[role="row"]', { state: 'attached', timeout: 10000 });
+                } catch(e) {}
+                
+                // 표가 화면에 완전히 나타날 넉넉한 추가 시간
                 await globalPage.waitForTimeout(7000); 
 
-                console.log('📍 [SCRAPE STEP 6] 진짜 데이터 긁어오기 (jqxGrid 강제 추출)');
-                
+                console.log('📍 [SCRAPE STEP 6] 진짜 데이터 긁어오기 (무적 필터 적용)');
                 const gridData = await targetFrame.evaluate(() => {
                     const rows = document.querySelectorAll('div[role="row"]');
                     const result = [];
@@ -188,22 +193,36 @@ app.post('/execute', async (req, res) => {
                     rows.forEach(row => {
                         const cells = row.querySelectorAll('div[role="gridcell"]');
                         if (cells.length > 2) {
-                            // 🌟 핵심 변경: innerText 대신 textContent를 사용하여 숨겨진 텍스트를 모두 파냅니다!
-                            const skuNumber = (cells[1].textContent || '').trim();
-                            const skuName = (cells[2].textContent || '').trim();
+                            let rowFullText = ''; // 행에 있는 모든 글자를 다 합쳐볼 바구니
+                            const rowObj = {};
+                            
+                            cells.forEach((cell, idx) => {
+                                const text = (cell.textContent || '').trim();
+                                rowObj[`col_${idx}`] = text;
+                                rowFullText += text; // 글자 합치기
+                            });
 
-                            if (skuNumber !== '' || skuName !== '') {
-                                const rowObj = {};
-                                cells.forEach((cell, idx) => {
-                                    // 데이터를 담을 때도 무조건 textContent로 파냅니다.
-                                    rowObj[`col_${idx}`] = (cell.textContent || '').trim();
-                                });
+                            // 🌟 핵심 변경: 행 전체의 글자 수가 5글자 이상이면 (유령 행이 아니면) 통과!
+                            if (rowFullText.length > 5) {
                                 result.push(rowObj);
                             }
                         }
                     });
                     return result;
                 });
+
+                // 🌟 블랙박스 기능: 만약 0건이라면 사진을 찍어 보냅니다.
+                if (gridData.length === 0) {
+                    console.log('📍 [경고] 데이터가 0건입니다. 로봇의 시야를 캡처합니다.');
+                    const imageBuffer = await globalPage.screenshot();
+                    return res.json({ 
+                        status: 'CHECK_REQUIRED', 
+                        message: '데이터를 0건 찾았습니다. 검색 버튼이 안 눌렸거나 로딩이 안 끝났을 수 있습니다. 스크린샷을 주소창에 붙여넣어 확인하세요.',
+                        count: 0,
+                        data: [],
+                        screenshot: 'data:image/png;base64,' + imageBuffer.toString('base64')
+                    });
+                }
 
                 console.log(`📍 [SCRAPE 완료] 총 ${gridData.length}개의 찐 데이터를 찾았습니다!`);
                 return res.json({ 
@@ -216,11 +235,10 @@ app.post('/execute', async (req, res) => {
             } catch (err) {
                 console.log(`📍 [SCRAPE 에러] ${err.message}`);
                 const imageBuffer = await globalPage.screenshot();
-                const base64Image = imageBuffer.toString('base64');
                 return res.json({ 
                     status: 'ERROR', 
                     message: err.message,
-                    screenshot: 'data:image/png;base64,' + base64Image 
+                    screenshot: 'data:image/png;base64,' + imageBuffer.toString('base64') 
                 });
             }
         }
