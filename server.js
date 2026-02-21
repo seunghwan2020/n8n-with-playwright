@@ -69,7 +69,7 @@ app.post('/execute', async (req, res) => {
             
             let contextOptions = { viewport: { width: 1280, height: 800 } };
             if (fs.existsSync('auth.json')) {
-                console.log('📍 [LOGIN STEP 2] 저장된 세션(쿠키) 발견! 장착합니다.');
+                console.log('📍 [LOGIN STEP 2] 저장된 세션(쿠키) 발견!');
                 contextOptions.storageState = 'auth.json';
             }
 
@@ -82,11 +82,11 @@ app.post('/execute', async (req, res) => {
             await globalPage.waitForTimeout(4000);
 
             if (globalPage.url().includes('soffice.11st.co.kr')) {
-                console.log('📍 [LOGIN STEP 3] 세션 유지 확인! 프리패스합니다.');
+                console.log('📍 [LOGIN STEP 3] 세션 유지 확인! 프리패스');
                 return res.json({ status: 'SUCCESS', message: '자동 로그인 되었습니다' });
             }
 
-            console.log('📍 [LOGIN STEP 4] 아이디/비밀번호 입력...');
+            console.log('📍 [LOGIN STEP 4] 로그인 진행...');
             await globalPage.fill('#loginName', USER_ID);
             await globalPage.fill('#passWord', USER_PW);
             await globalPage.click('button.c-button--submit');
@@ -100,14 +100,11 @@ app.post('/execute', async (req, res) => {
 
             const isEmailSelectPage = await globalPage.isVisible('label[for="auth_type_02"]');
             if (isEmailSelectPage) {
-                console.log('📍 [LOGIN STEP 5] 이메일 인증 선택 및 메일 발송...');
                 await globalPage.click('label[for="auth_type_02"]'); 
                 await globalPage.waitForTimeout(1000); 
-                
                 globalOtpRequestTime = Date.now() - 60000; 
                 await globalPage.click('button:has-text("인증번호 전송"):visible'); 
                 await globalPage.waitForTimeout(3000); 
-                
                 return res.json({ status: 'AUTH_REQUIRED', message: '인증 메일 발송 완료' });
             }
 
@@ -116,21 +113,12 @@ app.post('/execute', async (req, res) => {
         }
 
         if (action === 'verify_auto') {
-            if (!globalPage) return res.status(400).json({ status: 'ERROR', message: 'login을 먼저 실행하세요.' });
+            if (!globalPage) return res.status(400).json({ status: 'ERROR', message: 'login 먼저 실행' });
+            if (globalPage.url().includes('soffice.11st.co.kr')) return res.json({ status: 'SUCCESS' });
             
-            if (globalPage.url().includes('soffice.11st.co.kr')) {
-                return res.json({ status: 'SUCCESS', message: '이미 접속해 있습니다' });
-            }
-
-            if (!(await globalPage.isVisible('#auth_num_email'))) {
-                return res.json({ status: 'CHECK_REQUIRED', message: '인증번호 입력창이 없습니다.' });
-            }
-
-            console.log('📍 [VERIFY STEP 1] 메일함에서 인증번호 찾는 중...');
             const code = await getAuthCodeFromMail();
             if (!code) return res.json({ status: 'WAIT', message: '메일 대기 중...' });
 
-            console.log(`📍 [VERIFY STEP 2] 인증번호 [${code}] 입력 및 확인 클릭...`);
             await globalPage.fill('#auth_num_email', code);
             await globalPage.click('#auth_email_otp button[onclick="login();"]');
             await globalPage.waitForTimeout(5000); 
@@ -143,15 +131,12 @@ app.post('/execute', async (req, res) => {
             if (!globalPage) return res.status(400).json({ status: 'ERROR', message: '로그인이 필요합니다.' });
 
             try {
-                console.log('\n📍 [SCRAPE STEP 1] 재고 페이지로 이동합니다...');
+                console.log('\n📍 [SCRAPE STEP 1] 재고 페이지 이동...');
                 await globalPage.goto('https://soffice.11st.co.kr/view/40394', { waitUntil: 'domcontentloaded', timeout: 30000 });
-                
-                console.log('📍 [SCRAPE STEP 2] 껍데기가 다 열릴 때까지 8초 대기...');
                 await globalPage.waitForTimeout(8000); 
 
-                console.log('📍 [SCRAPE STEP 3] 프레임 탐색 시작!');
+                console.log('📍 [SCRAPE STEP 2] 프레임 탐색...');
                 let targetFrame = null;
-                
                 for(let i = 1; i <= 15; i++) {
                     const frames = globalPage.frames();
                     for (const frame of frames) {
@@ -168,24 +153,22 @@ app.post('/execute', async (req, res) => {
 
                 if (!targetFrame) throw new Error('검색 버튼을 찾지 못했습니다.');
 
-                console.log('📍 [SCRAPE STEP 4] 검색 버튼 확실하게 클릭하기! (사람처럼 꾹 누르기)');
+                console.log('📍 [SCRAPE STEP 3] 검색 버튼 꾹 누르기...');
                 try {
-                    // 🌟 핵심 변경: 0.2초 동안 꾹 눌러서 클릭 무시 방지
                     await targetFrame.locator('#btnSearch').click({ force: true, delay: 200, timeout: 5000 });
                 } catch (clickErr) {
                     await targetFrame.evaluate(() => document.querySelector('#btnSearch').click());
                 }
                 
-                console.log('📍 [SCRAPE STEP 5] 서버에서 표를 그려줄 때까지 스마트 대기...');
-                try {
-                    // 빈칸이 아닌 진짜 데이터 행이 DOM에 붙을 때까지 최대 10초 대기
-                    await targetFrame.waitForSelector('div[role="row"]', { state: 'attached', timeout: 10000 });
-                } catch(e) {}
-                
-                // 표가 화면에 완전히 나타날 넉넉한 추가 시간
-                await globalPage.waitForTimeout(7000); 
+                console.log('📍 [SCRAPE STEP 4] 표 데이터가 통신을 마치고 뜰 때까지 10초 대기...');
+                await globalPage.waitForTimeout(10000); 
 
-                console.log('📍 [SCRAPE STEP 6] 진짜 데이터 긁어오기 (무적 필터 적용)');
+                console.log('📍 [SCRAPE STEP 5] 📸 요청하신 풀 스크린샷 캡처 중...');
+                // 🌟 핵심 추가: 화면 맨 위부터 맨 아래까지 전체를 찍어버립니다.
+                const imageBuffer = await globalPage.screenshot({ fullPage: true });
+                const base64Image = 'data:image/png;base64,' + imageBuffer.toString('base64');
+
+                console.log('📍 [SCRAPE STEP 6] 데이터 추출 시도...');
                 const gridData = await targetFrame.evaluate(() => {
                     const rows = document.querySelectorAll('div[role="row"]');
                     const result = [];
@@ -193,16 +176,16 @@ app.post('/execute', async (req, res) => {
                     rows.forEach(row => {
                         const cells = row.querySelectorAll('div[role="gridcell"]');
                         if (cells.length > 2) {
-                            let rowFullText = ''; // 행에 있는 모든 글자를 다 합쳐볼 바구니
+                            let rowFullText = ''; 
                             const rowObj = {};
                             
                             cells.forEach((cell, idx) => {
-                                const text = (cell.textContent || '').trim();
+                                // 빈칸이나 보이지 않는 특수문자 완벽 제거
+                                const text = (cell.textContent || '').replace(/\s+/g, '').trim(); 
                                 rowObj[`col_${idx}`] = text;
-                                rowFullText += text; // 글자 합치기
+                                rowFullText += text;
                             });
 
-                            // 🌟 핵심 변경: 행 전체의 글자 수가 5글자 이상이면 (유령 행이 아니면) 통과!
                             if (rowFullText.length > 5) {
                                 result.push(rowObj);
                             }
@@ -211,34 +194,24 @@ app.post('/execute', async (req, res) => {
                     return result;
                 });
 
-                // 🌟 블랙박스 기능: 만약 0건이라면 사진을 찍어 보냅니다.
-                if (gridData.length === 0) {
-                    console.log('📍 [경고] 데이터가 0건입니다. 로봇의 시야를 캡처합니다.');
-                    const imageBuffer = await globalPage.screenshot();
-                    return res.json({ 
-                        status: 'CHECK_REQUIRED', 
-                        message: '데이터를 0건 찾았습니다. 검색 버튼이 안 눌렸거나 로딩이 안 끝났을 수 있습니다. 스크린샷을 주소창에 붙여넣어 확인하세요.',
-                        count: 0,
-                        data: [],
-                        screenshot: 'data:image/png;base64,' + imageBuffer.toString('base64')
-                    });
-                }
-
-                console.log(`📍 [SCRAPE 완료] 총 ${gridData.length}개의 찐 데이터를 찾았습니다!`);
+                console.log(`📍 [SCRAPE 완료] ${gridData.length}건 찾음. 사진과 함께 결과 전송합니다.`);
+                
+                // 🌟 성공하든 못하든(0건이든) 풀스크린 사진을 무조건 동봉해서 리턴합니다.
                 return res.json({ 
                     status: 'SUCCESS', 
-                    message: '데이터 추출 성공',
+                    message: `데이터 추출 종료 (총 ${gridData.length}건)`,
                     count: gridData.length,
-                    data: gridData 
+                    data: gridData,
+                    screenshot_full: base64Image // 전체 화면 사진
                 });
 
             } catch (err) {
                 console.log(`📍 [SCRAPE 에러] ${err.message}`);
-                const imageBuffer = await globalPage.screenshot();
+                const errImageBuffer = await globalPage.screenshot({ fullPage: true });
                 return res.json({ 
                     status: 'ERROR', 
                     message: err.message,
-                    screenshot: 'data:image/png;base64,' + imageBuffer.toString('base64') 
+                    screenshot_full: 'data:image/png;base64,' + errImageBuffer.toString('base64') 
                 });
             }
         }
