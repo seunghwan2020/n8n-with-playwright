@@ -8,12 +8,13 @@ app.use(express.json());
 
 const USER_ID = process.env['11th_USER'];
 const USER_PW = process.env['11th_PW'];
-
 const NAVER_USER = process.env['EMAIL_USER'];
 const NAVER_PW = process.env['EMAIL_PW'];
 
 let globalBrowser = null;
 let globalPage = null;
+// 🌟 방어막 1: 인증번호를 요청한 시간을 기억할 변수 추가
+let globalOtpRequestTime = 0; 
 
 async function getAuthCodeFromMail() {
     const client = new ImapFlow({
@@ -36,8 +37,18 @@ async function getAuthCodeFromMail() {
 
             if (message && message.source) {
                 const mail = await simpleParser(message.source);
-                const mailText = mail.text || mail.html;
                 
+                // 🌟 방어막 1 작동: 메일 도착 시간이 인증 버튼 누른 시간보다 과거면 무시!
+                const mailDate = mail.date ? mail.date.getTime() : 0;
+                if (mailDate < globalOtpRequestTime) {
+                    console.log('📍 옛날 메일이 발견되었습니다. 새 메일을 기다립니다...');
+                    return null; 
+                }
+
+                // 🌟 방어막 2 작동: 메일을 성공적으로 읽었으면 '읽음' 처리해서 지워버리기
+                await client.messageFlagsAdd(latestSeq, ['\\Seen']);
+
+                const mailText = mail.text || mail.html;
                 const match = mailText.match(/\d{6,8}/);
                 if (match) authCode = match[0];
             }
@@ -85,11 +96,12 @@ app.post('/execute', async (req, res) => {
             if (isEmailSelectPage) {
                 console.log('📍 이메일 인증 선택 및 메일 발송');
                 await globalPage.click('label[for="auth_type_02"]'); 
-                await globalPage.waitForTimeout(1000); // 🌟 이메일 선택 후 화면이 바뀔 때까지 1초 대기
+                await globalPage.waitForTimeout(1000); 
                 
-                // 🌟 에러 해결 핵심 코드: 여러 버튼 중 텍스트가 일치하고 눈에 '보이는' 버튼만 클릭!
+                // 🌟 방어막 1 세팅: 버튼 누르기 직전에 현재 시간을 기록 (서버 시간차 고려 1분 여유)
+                globalOtpRequestTime = Date.now() - 60000; 
+                
                 await globalPage.click('button:has-text("인증번호 전송"):visible'); 
-                
                 await globalPage.waitForTimeout(3000); 
                 
                 return res.json({ status: 'AUTH_REQUIRED', message: '인증 메일 발송 완료. 대기실에서 대기 중...' });
@@ -105,7 +117,7 @@ app.post('/execute', async (req, res) => {
             const code = await getAuthCodeFromMail();
 
             if (!code) {
-                return res.json({ status: 'WAIT', message: '아직 메일이 안 왔거나 번호를 못 찾았습니다.' });
+                return res.json({ status: 'WAIT', message: '아직 메일이 안 왔거나 옛날 메일만 있습니다.' });
             }
 
             console.log('📍 획득한 인증번호 입력:', code);
