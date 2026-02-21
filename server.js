@@ -179,25 +179,24 @@ app.post('/execute', async (req, res) => {
                 console.log('📍 [SCRAPE STEP 5] 데이터 로딩 대기...');
                 await globalPage.waitForTimeout(7000); 
 
-                console.log('📍 [SCRAPE STEP 6] 진짜 데이터 긁어오기 (유령 행 제외)');
-                // 🌟 여기서부터 빈칸 필터링 로직이 들어갑니다.
+                console.log('📍 [SCRAPE STEP 6] 진짜 데이터 긁어오기 (jqxGrid 강제 추출)');
+                
                 const gridData = await targetFrame.evaluate(() => {
                     const rows = document.querySelectorAll('div[role="row"]');
                     const result = [];
                     
                     rows.forEach(row => {
                         const cells = row.querySelectorAll('div[role="gridcell"]');
-                        // 칸이 충분히 있는지 확인합니다.
                         if (cells.length > 2) {
-                            // 2번째 칸(SKU번호) 혹은 3번째 칸(SKU명)의 글자를 확인합니다.
-                            const skuNumber = cells[1].innerText.trim();
-                            const skuName = cells[2].innerText.trim();
+                            // 🌟 핵심 변경: innerText 대신 textContent를 사용하여 숨겨진 텍스트를 모두 파냅니다!
+                            const skuNumber = (cells[1].textContent || '').trim();
+                            const skuName = (cells[2].textContent || '').trim();
 
-                            // 둘 중 하나라도 내용이 있는 '진짜 데이터'만 배열에 담습니다.
                             if (skuNumber !== '' || skuName !== '') {
                                 const rowObj = {};
                                 cells.forEach((cell, idx) => {
-                                    rowObj[`col_${idx}`] = cell.innerText.trim();
+                                    // 데이터를 담을 때도 무조건 textContent로 파냅니다.
+                                    rowObj[`col_${idx}`] = (cell.textContent || '').trim();
                                 });
                                 result.push(rowObj);
                             }
