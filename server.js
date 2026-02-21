@@ -93,6 +93,7 @@ app.post('/scrape-naver-inventory', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => {
+// '0.0.0.0'을 추가하여 외부 접속(Railway 포트 포워딩)을 허용합니다.
+app.listen(PORT, '0.0.0.0', () => {
     console.log(`Playwright server listening on :${PORT}`);
 });
