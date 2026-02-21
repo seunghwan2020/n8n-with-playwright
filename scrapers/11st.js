@@ -15,11 +15,8 @@ let globalOtpRequestTime = 0;
 
 async function getAuthCodeFromMail() {
     const client = new ImapFlow({
-        host: 'imap.worksmobile.com',
-        port: 993,
-        secure: true,
-        auth: { user: NAVER_USER, pass: NAVER_PW },
-        logger: false
+        host: 'imap.worksmobile.com', port: 993, secure: true,
+        auth: { user: NAVER_USER, pass: NAVER_PW }, logger: false
     });
     await client.connect();
     let lock = await client.getMailboxLock('INBOX');
@@ -39,71 +36,46 @@ async function getAuthCodeFromMail() {
                 if (match) authCode = match[0];
             }
         }
-    } catch (err) {
-        console.error('DEBUG: [MAIL_ERROR]', err);
-    } finally {
-        lock.release();
-        await client.logout();
-    }
+    } catch (err) { console.error('DEBUG: [MAIL_ERROR]', err); }
+    finally { lock.release(); await client.logout(); }
     return authCode;
 }
 
 async function execute(action, req, res) {
     try {
         if (action === 'login') {
-            console.log('STEP 1: Starting Login process...');
+            console.log('STEP 1: Starting Login...');
             if (globalBrowser) await globalBrowser.close();
             globalBrowser = await chromium.launch({ args: ['--no-sandbox', '--disable-setuid-sandbox'] });
-            let contextOptions = { viewport: { width: 1280, height: 1000 } };
-            if (fs.existsSync('auth.json')) {
-                console.log('STEP 2: Found existing auth.json. Loading session...');
-                contextOptions.storageState = 'auth.json';
-            }
+            let contextOptions = { viewport: { width: 1400, height: 1000 } };
+            if (fs.existsSync('auth.json')) { contextOptions.storageState = 'auth.json'; }
             const context = await globalBrowser.newContext(contextOptions);
             globalPage = await context.newPage();
             globalPage.on('dialog', async dialog => await dialog.accept());
-
-            console.log('STEP 3: Navigating to login page...');
             await globalPage.goto('https://login.11st.co.kr/auth/front/selleroffice/login.tmall');
             await globalPage.waitForTimeout(4000);
-
-            if (globalPage.url().includes('soffice.11st.co.kr')) {
-                console.log('STEP 4: Session valid. Auto-login successful.');
-                return res.json({ status: 'SUCCESS', message: '자동 로그인 되었습니다' });
-            }
-
-            console.log('STEP 5: Inputting credentials...');
+            if (globalPage.url().includes('soffice.11st.co.kr')) return res.json({ status: 'SUCCESS' });
             await globalPage.fill('#loginName', USER_ID);
             await globalPage.fill('#passWord', USER_PW);
             await globalPage.click('button.c-button--submit');
             await globalPage.waitForTimeout(4000);
-
             if (await globalPage.isVisible('button:has-text("인증정보 선택하기")')) {
-                console.log('STEP 6: Selecting authentication type...');
                 await globalPage.click('button:has-text("인증정보 선택하기")');
                 await globalPage.waitForTimeout(2000);
             }
-
             if (await globalPage.isVisible('label[for="auth_type_02"]')) {
-                console.log('STEP 7: 2FA Required. Sending email verification...');
                 await globalPage.click('label[for="auth_type_02"]');
                 globalOtpRequestTime = Date.now() - 60000;
                 await globalPage.click('button:has-text("인증번호 전송"):visible');
-                return res.json({ status: 'AUTH_REQUIRED', message: '인증 메일 발송 완료' });
+                return res.json({ status: 'AUTH_REQUIRED' });
             }
-
             await globalPage.context().storageState({ path: 'auth.json' });
             return res.json({ status: 'SUCCESS' });
         }
 
         if (action === 'verify_auto') {
-            console.log('STEP 1: Starting OTP verification...');
             const code = await getAuthCodeFromMail();
-            if (!code) {
-                console.log('STEP 2: OTP mail not found yet. Waiting...');
-                return res.json({ status: 'WAIT' });
-            }
-            console.log(`STEP 3: OTP received: ${code}. Filling input...`);
+            if (!code) return res.json({ status: 'WAIT' });
             await globalPage.fill('#auth_num_email', code);
             await globalPage.click('#auth_email_otp button[onclick="login();"]');
             await globalPage.waitForTimeout(5000);
@@ -112,64 +84,68 @@ async function execute(action, req, res) {
         }
 
         if (action === 'scrape') {
-            console.log('STEP 1: Starting scrape action...');
-            if (!globalPage) throw new Error('Global page is not initialized. Please login first.');
+            console.log('STEP 1: Scrape initiated.');
+            if (!globalPage) throw new Error('Session not found. Please login.');
 
-            console.log('STEP 2: Navigating to stock management page...');
+            console.log('STEP 2: Navigating to Stock Page...');
             await globalPage.goto('https://soffice.11st.co.kr/view/40394', { waitUntil: 'domcontentloaded' });
-            await globalPage.waitForTimeout(8000);
+            await globalPage.waitForTimeout(10000);
 
             let targetFrame = null;
-            console.log('STEP 3: Finding iframe for stock grid...');
             for (const frame of globalPage.frames()) {
-                if (await frame.locator('#btnSearch').count() > 0) {
-                    targetFrame = frame;
-                    break;
-                }
+                if (await frame.locator('#btnSearch').count() > 0) { targetFrame = frame; break; }
             }
-            if (!targetFrame) throw new Error('Failed to find stock management frame.');
+            if (!targetFrame) throw new Error('Frame with search button not found.');
 
-            console.log('STEP 4: Clicking search button...');
-            await targetFrame.click('#btnSearch');
+            console.log('STEP 3: Clicking Search Button...');
+            await targetFrame.click('#btnSearch', { force: true });
             await globalPage.waitForTimeout(5000);
 
-            console.log('STEP 5: Triggering Excel download...');
-            const downloadPromise = globalPage.waitForEvent('download');
-            await targetFrame.click('button:has-text("엑셀다운로드")');
-            const download = await downloadPromise;
+            console.log('STEP 4: Ensuring Excel Download button is ready...');
+            const downloadBtn = targetFrame.locator('button:has-text("엑셀다운로드")');
+            await downloadBtn.scrollIntoViewIfNeeded();
 
-            const filePath = `./temp_stock_list.xls`;
-            console.log(`STEP 6: Saving download to ${filePath}...`);
-            await download.saveAs(filePath);
+            console.log('STEP 5: Waiting for Download event (timeout increased to 60s)...');
+            try {
+                const [download] = await Promise.all([
+                    // 타임아웃을 60초로 늘리고, 명시적으로 이벤트를 기다립니다.
+                    globalPage.waitForEvent('download', { timeout: 60000 }),
+                    downloadBtn.click({ force: true })
+                ]);
 
-            console.log('STEP 7: Reading Excel file with XLSX library...');
-            const workbook = XLSX.readFile(filePath);
-            const sheetName = workbook.SheetNames[0];
-            const sheet = workbook.Sheets[sheetName];
-            const rawData = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+                const filePath = `./temp_stock_${Date.now()}.xls`;
+                console.log(`STEP 6: Saving file to ${filePath}...`);
+                await download.saveAs(filePath);
 
-            console.log('STEP 8: Mapping columns for 36 items...');
-            const finalData = rawData.slice(1).map((row) => {
-                const obj = {};
-                // 36개 컬럼 매핑 (SKU번호 ~ 최종수정자)
-                for (let i = 0; i < 36; i++) {
-                    let val = (row[i] === undefined || row[i] === null) ? "" : String(row[i]).trim();
-                    // 숫자 콤마 제거 처리
-                    if ([0, 9, 10, 11, 12, 13, 14, 15, 19, 20, 21, 22, 30].includes(i)) {
-                        val = val.replace(/,/g, '') || '0';
+                console.log('STEP 7: Processing Excel Data...');
+                const workbook = XLSX.readFile(filePath);
+                const sheet = workbook.Sheets[workbook.SheetNames[0]];
+                const rawData = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+
+                const finalData = rawData.slice(1).map((row) => {
+                    const obj = {};
+                    for (let i = 0; i < 36; i++) {
+                        let val = (row[i] === undefined || row[i] === null) ? "" : String(row[i]).trim();
+                        if ([0, 9, 10, 11, 12, 13, 14, 15, 19, 20, 21, 22, 30].includes(i)) {
+                            val = val.replace(/,/g, '') || '0';
+                        }
+                        obj[`col_${i}`] = val;
                     }
-                    obj[`col_${i}`] = val;
-                }
-                return obj;
-            });
+                    return obj;
+                });
 
-            console.log(`STEP 9: Cleanup - deleting temp file. Total items: ${finalData.length}`);
-            fs.unlinkSync(filePath);
+                fs.unlinkSync(filePath);
+                console.log(`STEP 8: Success! Collected ${finalData.length} items.`);
+                return res.json({ status: 'SUCCESS', count: finalData.length, data: finalData });
 
-            return res.json({ status: 'SUCCESS', count: finalData.length, data: finalData });
+            } catch (downloadErr) {
+                console.error('STEP 5 ERROR: Download failed or timed out.', downloadErr.message);
+                // 에러 발생 시 현재 화면을 찍어서 디버깅 (선택 사항)
+                return res.json({ status: 'ERROR', message: `Download Timeout: ${downloadErr.message}` });
+            }
         }
     } catch (err) {
-        console.error('FATAL ERROR DURING EXECUTION:', err.message);
+        console.error('FATAL ERROR:', err.message);
         return res.json({ status: 'ERROR', message: err.message });
     }
 }
