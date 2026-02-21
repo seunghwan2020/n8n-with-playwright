@@ -105,72 +105,45 @@ async function execute(action, req, res) {
             }
             if (!targetFrame) throw new Error('프레임을 찾지 못했습니다.');
 
-            // 1. 페이지당 건수 300건으로 변경 시도
-            await targetFrame.evaluate(() => {
-                const select = document.querySelector('.jqx-grid-pager-input select') || document.querySelector('select[role="listbox"]');
-                if (select) {
-                    select.value = "300";
-                    select.dispatchEvent(new Event('change'));
-                }
-            });
-            await globalPage.waitForTimeout(2000);
-
-            // 2. 검색 클릭
+            // 검색 클릭
             await targetFrame.evaluate(() => document.querySelector('#btnSearch').click());
-            await globalPage.waitForTimeout(8000); 
+            await globalPage.waitForTimeout(5000); 
 
-            // 🌟 3. 자동 스크롤 수집 로직 (핵심)
+            // 🌟 자동 스크롤 수집 (중복 제거용 Map 사용)
             const finalData = await targetFrame.evaluate(async () => {
-                const results = new Map(); // 중복 방지를 위한 Map
-                const scrollContainer = document.querySelector('.jqx-grid-content') || document.querySelector('#SKUListGrid');
+                const results = new Map();
+                // 11번가 jqxGrid의 실제 스크롤 가능한 영역
+                const scrollContainer = document.querySelector('.jqx-grid-content') || document.querySelector('#contentSKUListGrid');
                 
                 if (!scrollContainer) return [];
 
-                let lastHeight = 0;
-                let sameHeightCount = 0;
-
-                // 최대 20번 스크롤 시도 (데이터가 아주 많을 경우 대비)
-                for (let i = 0; i < 20; i++) {
-                    // 현재 보이는 행들 수집
+                let lastScrollTop = -1;
+                for (let i = 0; i < 30; i++) { // 최대 30번 스크롤
                     const rows = document.querySelectorAll('div[role="row"]');
                     rows.forEach(row => {
                         const cells = row.querySelectorAll('div[role="gridcell"]');
                         if (cells.length > 2) {
-                            const skuNumber = (cells[2].textContent || '').trim(); // col_2가 SKU번호
-                            const skuName = (cells[3].textContent || '').trim();   // col_3이 SKU명
-                            
-                            if (skuNumber && skuNumber !== '') {
+                            const skuNumber = (cells[2].textContent || '').trim();
+                            if (skuNumber && skuNumber !== "") {
                                 const rowObj = {};
                                 cells.forEach((cell, idx) => {
                                     rowObj[`col_${idx}`] = (cell.textContent || '').trim();
                                 });
-                                results.set(skuNumber, rowObj); // SKU번호를 키로 중복 제거하며 저장
+                                results.set(skuNumber, rowObj); // SKU번호 기준 중복 제거
                             }
                         }
                     });
 
-                    // 아래로 스크롤
-                    scrollContainer.scrollTop += 800; 
-                    await new Promise(r => setTimeout(r, 1500)); // 로딩 대기
-
-                    // 스크롤이 끝에 도달했는지 확인
-                    if (scrollContainer.scrollTop === lastHeight) {
-                        sameHeightCount++;
-                        if (sameHeightCount >= 2) break; // 두 번 시도했는데도 그대로면 끝
-                    } else {
-                        sameHeightCount = 0;
-                        lastHeight = scrollContainer.scrollTop;
-                    }
+                    if (scrollContainer.scrollTop === lastScrollTop) break;
+                    lastScrollTop = scrollContainer.scrollTop;
+                    scrollContainer.scrollTop += 600; // 스크롤 내리기
+                    await new Promise(r => setTimeout(r, 1200)); // 로딩 대기
                 }
                 return Array.from(results.values());
             });
 
-            console.log(`📍 [11st] 스크롤 수집 완료: 총 ${finalData.length}건`);
-            return res.json({ 
-                status: 'SUCCESS', 
-                count: finalData.length,
-                data: finalData 
-            });
+            console.log(`📍 [11st] 수집 완료: ${finalData.length}건`);
+            return res.json({ status: 'SUCCESS', count: finalData.length, data: finalData });
         }
     } catch (err) {
         return res.json({ status: 'ERROR', message: err.message });
