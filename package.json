@@ -1,7 +1,7 @@
 {
   "name": "n8n-with-playwright",
   "version": "1.0.0",
-  "description": "",
+  "description": "11st Stock Scraper with Excel Processing",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
@@ -11,6 +11,6 @@
     "playwright": "^1.41.2",
     "imapflow": "^1.0.141",
     "mailparser": "^3.6.6",
-    "xlsx": "^0.18.5"  <-- 🌟 이 줄을 정확히 추가해 주세요!
+    "xlsx": "^0.18.5"
   }
 }
