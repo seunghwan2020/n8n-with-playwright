@@ -8,8 +8,10 @@ app.use(express.json());
 
 const USER_ID = process.env['11th_USER'];
 const USER_PW = process.env['11th_PW'];
-const NAVER_USER = process.env['NAVER_USER'];
-const NAVER_PW = process.env['NAVER_PW'];
+
+// 🌟 미리 만들어두신 EMAIL 변수로 수정 완료!
+const NAVER_USER = process.env['EMAIL_USER'];
+const NAVER_PW = process.env['EMAIL_PW'];
 
 let globalBrowser = null;
 let globalPage = null;
