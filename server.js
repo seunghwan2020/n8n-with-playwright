@@ -30,7 +30,7 @@ app.post('/scrape-naver-inventory', async (req, res) => {
             args: [
                 '--no-sandbox', 
                 '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage' // 컨테이너 환경 메모리 크래시(OOM) 방지용 옵션
+                '--disable-dev-shm-usage' // 컨테이너 환경 메모리 크래시 방지용 옵션
             ] 
         });
         
@@ -42,17 +42,22 @@ app.post('/scrape-naver-inventory', async (req, res) => {
         const page = await context.newPage();
 
         console.log('📍 [STEP 3] 네이버 로그인 페이지 접속 시도 중...');
-        // networkidle 대신 domcontentloaded로 변경하고, 타임아웃을 60초로 넉넉하게 늘림
         await page.goto('https://sell.smartstore.naver.com/#/login', { 
             waitUntil: 'domcontentloaded', 
             timeout: 60000 
         });
 
         console.log('📍 [STEP 4] 네이버 페이지 접속 완료! ID/PW 입력을 시작합니다...');
-        // 실제 네이버 로그인 폼의 HTML 태그 id/name에 맞춰 셀렉터를 수정해야 할 수 있습니다.
-        await page.fill('#username_selector', NAV_USER); 
-        await page.fill('#password_selector', NAV_PW);
-        await page.click('#login_button_selector');
+        
+        // 캡처해주신 돔(DOM) 구조를 바탕으로 안정적인 셀렉터를 타겟팅합니다.
+        // 1. ID 입력 (이메일/판매자 아이디) - 사람처럼 타이핑
+        await page.type('input[placeholder="아이디 또는 이메일 주소"]', NAV_USER, { delay: 100 }); 
+        
+        // 2. 비밀번호 입력
+        await page.type('input[placeholder="비밀번호"]', NAV_PW, { delay: 100 });
+        
+        // 3. 로그인 버튼 클릭 (내부 텍스트가 '로그인'인 버튼을 명시적으로 클릭)
+        await page.click('button:has-text("로그인")');
 
         console.log('📍 [STEP 5] 로그인 버튼 클릭 완료! 2단계 인증 대기 중...');
 
@@ -70,15 +75,13 @@ app.post('/scrape-naver-inventory', async (req, res) => {
             console.log('2단계 인증 화면이 없거나 이미 통과했습니다.');
         }
 
-        // 3. 재고 페이지 이동 및 데이터 크롤링 로직 (추후 실제 페이지에 맞게 구현 필요)
+        // 3. 재고 페이지 이동 및 데이터 크롤링 (이후 실제 데이터 파싱 시 작성할 영역)
         // await page.goto('N배송_재고관리_페이지_URL');
         // const rawData = await page.$$eval('table tr', rows => { ... });
 
-        console.log('📍 [STEP 6] 데이터 정제 및 n8n 반환');
+        console.log('📍 [STEP 6] 데이터 정제 및 n8n 반환 완료');
 
-        // 4. PostgreSQL 저장용 정제 데이터
-        // 쓸데없이 mail_id가 생기거나 메일 전체가 raw로 감싸지는 현상을 방지하기 위해
-        // n8n이 바로 Item으로 분리(Split)할 수 있는 완벽히 평탄화된 배열(Flat Array)을 생성합니다.
+        // 4. PostgreSQL 저장용 정제 데이터 (테스트용)
         const cleanedData = [
             { 
                 sku_id: 'ITEM-BLK-20', 
@@ -92,7 +95,7 @@ app.post('/scrape-naver-inventory', async (req, res) => {
             }
         ];
 
-        // n8n의 HTTP Request 노드에서 'Response Format'을 'JSON'으로 두면 깔끔하게 파싱됩니다.
+        // n8n이 바로 Item으로 인식하도록 배열 형태로 리턴
         res.status(200).json(cleanedData);
 
     } catch (error) {
@@ -107,7 +110,7 @@ app.post('/scrape-naver-inventory', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 8080;
-// Railway 환경에서 외부 접속(포트 포워딩)을 허용하기 위해 '0.0.0.0'을 명시합니다.
+// Railway 환경에서 외부 접속 허용
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`Playwright server listening on :${PORT}`);
 });
