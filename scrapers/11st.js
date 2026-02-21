@@ -53,7 +53,6 @@ async function getAuthCodeFromMail() {
     return authCode;
 }
 
-// 🌟 관제탑에서 넘겨받아 실행할 메인 함수
 async function execute(action, req, res) {
     try {
         if (action === 'login') {
@@ -63,7 +62,6 @@ async function execute(action, req, res) {
             globalBrowser = await chromium.launch({ args: ['--no-sandbox', '--disable-setuid-sandbox'] });
             
             let contextOptions = { viewport: { width: 1280, height: 800 } };
-            // 폴더가 달라져도 './auth.json'은 최상위(root)를 바라보게 되어 있어 안전합니다.
             if (fs.existsSync('auth.json')) {
                 console.log('📍 [11st LOGIN STEP 2] 저장된 세션(쿠키) 발견!');
                 contextOptions.storageState = 'auth.json';
@@ -128,9 +126,12 @@ async function execute(action, req, res) {
 
             console.log('\n📍 [11st SCRAPE STEP 1] 재고 페이지 이동...');
             await globalPage.goto('https://soffice.11st.co.kr/view/40394', { waitUntil: 'domcontentloaded', timeout: 30000 });
-            await globalPage.waitForTimeout(8000); 
+            
+            // 🌟 1차 대기: 화면 안의 클릭 스크립트들이 충분히 깨어날 때까지 10초 대기
+            console.log('📍 [11st SCRAPE STEP 2] 껍데기 로딩 대기...');
+            await globalPage.waitForTimeout(10000); 
 
-            console.log('📍 [11st SCRAPE STEP 2] 프레임 탐색...');
+            console.log('📍 [11st SCRAPE STEP 3] 프레임 탐색...');
             let targetFrame = null;
             for(let i = 1; i <= 15; i++) {
                 const frames = globalPage.frames();
@@ -148,46 +149,81 @@ async function execute(action, req, res) {
 
             if (!targetFrame) throw new Error('검색 버튼을 찾지 못했습니다.');
 
-            console.log('📍 [11st SCRAPE STEP 3] 검색 버튼 꾹 누르기...');
+            console.log('📍 [11st SCRAPE STEP 4] 검색 버튼 이중 클릭 (클릭 씹힘 완벽 방지)!');
+            // 1. 순수 자바스크립트 뇌파 클릭 (가장 확실함)
+            await targetFrame.evaluate(() => {
+                const btn = document.querySelector('#btnSearch');
+                if(btn) {
+                    btn.focus();
+                    btn.click();
+                }
+            });
+            
+            await globalPage.waitForTimeout(1000);
+            
+            // 2. Playwright 마우스 클릭 (만약 JS 클릭이 막혀있을 경우를 대비한 보험)
             try {
-                await targetFrame.locator('#btnSearch').click({ force: true, delay: 200, timeout: 5000 });
+                const btnLocator = targetFrame.locator('#btnSearch');
+                await btnLocator.scrollIntoViewIfNeeded();
+                await btnLocator.click({ delay: 100, timeout: 5000 });
             } catch (clickErr) {
-                await targetFrame.evaluate(() => document.querySelector('#btnSearch').click());
+                console.log('   ⚠️ 마우스 클릭은 패스합니다 (JS 클릭에 의존)');
             }
             
-            console.log('📍 [11st SCRAPE STEP 4] 데이터 대기(10초)...');
+            console.log('📍 [11st SCRAPE STEP 5] 검색 결과 통신 대기(10초)...');
             await globalPage.waitForTimeout(10000); 
 
-            console.log('📍 [11st SCRAPE STEP 5] 전체 화면 캡처 중...');
+            console.log('📍 [11st SCRAPE STEP 6] 데이터 추출 시작...');
+            // 데이터 추출 로직을 함수로 묶어 두 번 시도할 수 있게 만듭니다.
+            const extractData = async () => {
+                return await targetFrame.evaluate(() => {
+                    const rows = document.querySelectorAll('div[role="row"]');
+                    const result = [];
+                    rows.forEach(row => {
+                        const cells = row.querySelectorAll('div[role="gridcell"]');
+                        if (cells.length > 2) {
+                            let rowFullText = ''; 
+                            const rowObj = {};
+                            cells.forEach((cell, idx) => {
+                                const text = (cell.textContent || '').replace(/\s+/g, '').trim(); 
+                                rowObj[`col_${idx}`] = text;
+                                rowFullText += text;
+                            });
+                            // 데이터가 들어있는 진짜 행만 줍기
+                            if (rowFullText.length > 5) {
+                                result.push(rowObj);
+                            }
+                        }
+                    });
+                    return result;
+                });
+            };
+
+            let gridData = await extractData();
+
+            // 🌟 2차 대기 (재도전): 서버가 너무 느려서 10초 만에 안 나왔을 경우를 대비
+            if (gridData.length === 0) {
+                console.log('📍 아직 데이터가 없습니다. 혹시 서버가 느린 것일 수 있으니 5초 더 기다려 봅니다...');
+                await globalPage.waitForTimeout(5000);
+                gridData = await extractData(); // 다시 긁어오기
+            }
+
+            console.log('📍 [11st SCRAPE STEP 7] 전체 화면 캡처 중...');
             const imageBuffer = await globalPage.screenshot({ fullPage: true });
             const base64Image = 'data:image/png;base64,' + imageBuffer.toString('base64');
 
-            console.log('📍 [11st SCRAPE STEP 6] 데이터 추출...');
-            const gridData = await targetFrame.evaluate(() => {
-                const rows = document.querySelectorAll('div[role="row"]');
-                const result = [];
-                
-                rows.forEach(row => {
-                    const cells = row.querySelectorAll('div[role="gridcell"]');
-                    if (cells.length > 2) {
-                        let rowFullText = ''; 
-                        const rowObj = {};
-                        
-                        cells.forEach((cell, idx) => {
-                            const text = (cell.textContent || '').replace(/\s+/g, '').trim(); 
-                            rowObj[`col_${idx}`] = text;
-                            rowFullText += text;
-                        });
-
-                        if (rowFullText.length > 5) {
-                            result.push(rowObj);
-                        }
-                    }
+            if (gridData.length === 0) {
+                console.log('📍 [경고] 재도전 후에도 데이터가 0건입니다.');
+                return res.json({ 
+                    status: 'CHECK_REQUIRED', 
+                    message: '데이터가 0건입니다. 스크린샷을 확인해 주세요.',
+                    count: 0,
+                    data: [],
+                    screenshot_full: base64Image
                 });
-                return result;
-            });
+            }
 
-            console.log(`📍 [11st SCRAPE 완료] ${gridData.length}건 찾음.`);
+            console.log(`📍 [11st SCRAPE 완료] 드디어 ${gridData.length}건을 성공적으로 찾았습니다! 🎉`);
             return res.json({ 
                 status: 'SUCCESS', 
                 message: `데이터 추출 종료 (총 ${gridData.length}건)`,
@@ -208,5 +244,4 @@ async function execute(action, req, res) {
     }
 }
 
-// 모듈 내보내기
 module.exports = { execute };
