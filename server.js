@@ -116,7 +116,6 @@ app.post('/execute', async (req, res) => {
         }
 
         if (action === 'verify_auto') {
-            // ... 기존 verify 로직 동일하므로 생략 없이 풀버전 유지
             if (!globalPage) return res.status(400).json({ status: 'ERROR', message: 'login을 먼저 실행하세요.' });
             
             if (globalPage.url().includes('soffice.11st.co.kr')) {
@@ -140,79 +139,74 @@ app.post('/execute', async (req, res) => {
             return res.json({ status: 'SUCCESS', message: '최종 로그인 성공!' });
         }
 
-        // =========================================================
-        // 🌟 수정된 스크래핑 단계 (디테일 로깅 & 무적 클릭)
-        // =========================================================
         if (action === 'scrape') {
             if (!globalPage) return res.status(400).json({ status: 'ERROR', message: '로그인이 필요합니다.' });
 
             try {
-                console.log('\n📍 [SCRAPE STEP 1] 재고 페이지(40394)로 이동합니다...');
+                console.log('\n📍 [SCRAPE STEP 1] 재고 페이지로 이동합니다...');
                 await globalPage.goto('https://soffice.11st.co.kr/view/40394', { waitUntil: 'domcontentloaded', timeout: 30000 });
                 
-                console.log('📍 [SCRAPE STEP 2] 화면이 어느 정도 그려질 때까지 6초 대기합니다...');
+                console.log('📍 [SCRAPE STEP 2] 화면 로딩 대기...');
                 await globalPage.waitForTimeout(6000); 
 
-                console.log('📍 [SCRAPE STEP 3] 버튼이 숨겨져 있는 안쪽 액자(iframe) 탐색 시작!');
+                console.log('📍 [SCRAPE STEP 3] 프레임 탐색 시작!');
                 let targetFrame = null;
                 
                 for(let i = 1; i <= 15; i++) {
                     const frames = globalPage.frames();
-                    console.log(`   👉 탐색 ${i}회차: 현재 화면에 총 ${frames.length}개의 프레임이 있습니다.`);
-                    
                     for (const frame of frames) {
                         try {
                             const btnCount = await frame.locator('#btnSearch').count();
                             if (btnCount > 0) {
                                 targetFrame = frame;
-                                console.log(`   ✅ [찾음] ${i}번 만에 검색 버튼이 있는 프레임을 찾았습니다!`);
                                 break;
                             }
-                        } catch (e) { /* 권한 없는 프레임 패스 */ }
+                        } catch (e) { }
                     }
                     if (targetFrame) break; 
                     await globalPage.waitForTimeout(1000); 
                 }
 
-                if (!targetFrame) {
-                    throw new Error('[에러] 15초 동안 뒤졌지만 #btnSearch 버튼을 결국 찾지 못했습니다.');
-                }
+                if (!targetFrame) throw new Error('검색 버튼을 찾지 못했습니다.');
 
-                console.log('📍 [SCRAPE STEP 4] 검색 버튼 클릭을 시도합니다...');
+                console.log('📍 [SCRAPE STEP 4] 검색 버튼 클릭!');
                 try {
-                    // 1차 시도: 일반 클릭
                     await targetFrame.click('#btnSearch', { force: true, timeout: 5000 });
-                    console.log('   ✅ 마우스로 클릭 성공!');
                 } catch (clickErr) {
-                    // 2차 시도: 자바스크립트로 강제 클릭 (무적)
-                    console.log('   ⚠️ 마우스 클릭 실패! 자바스크립트(뇌파)로 강제 클릭합니다.');
-                    await targetFrame.evaluate(() => {
-                        document.querySelector('#btnSearch').click();
-                    });
-                    console.log('   ✅ 자바스크립트 강제 클릭 성공!');
+                    await targetFrame.evaluate(() => document.querySelector('#btnSearch').click());
                 }
                 
-                console.log('📍 [SCRAPE STEP 5] 재고 데이터가 뜰 때까지 7초 대기합니다...');
+                console.log('📍 [SCRAPE STEP 5] 데이터 로딩 대기...');
                 await globalPage.waitForTimeout(7000); 
 
-                console.log('📍 [SCRAPE STEP 6] 화면에서 데이터 긁어오기 시작!');
+                console.log('📍 [SCRAPE STEP 6] 진짜 데이터 긁어오기 (유령 행 제외)');
+                // 🌟 여기서부터 빈칸 필터링 로직이 들어갑니다.
                 const gridData = await targetFrame.evaluate(() => {
-                    const rows = document.querySelectorAll('#SKUListGrid div[role="row"]');
+                    const rows = document.querySelectorAll('div[role="row"]');
                     const result = [];
+                    
                     rows.forEach(row => {
                         const cells = row.querySelectorAll('div[role="gridcell"]');
-                        if (cells.length > 0 && cells[0].innerText.trim() !== '') {
-                            const rowObj = {};
-                            cells.forEach((cell, idx) => {
-                                rowObj[`col_${idx}`] = cell.innerText.trim();
-                            });
-                            result.push(rowObj);
+                        // 칸이 충분히 있는지 확인합니다.
+                        if (cells.length > 2) {
+                            // 2번째 칸(SKU번호) 혹은 3번째 칸(SKU명)의 글자를 확인합니다.
+                            const skuNumber = cells[1].innerText.trim();
+                            const skuName = cells[2].innerText.trim();
+
+                            // 둘 중 하나라도 내용이 있는 '진짜 데이터'만 배열에 담습니다.
+                            if (skuNumber !== '' || skuName !== '') {
+                                const rowObj = {};
+                                cells.forEach((cell, idx) => {
+                                    rowObj[`col_${idx}`] = cell.innerText.trim();
+                                });
+                                result.push(rowObj);
+                            }
                         }
                     });
                     return result;
                 });
 
-                console.log(`📍 [SCRAPE 완료] 총 ${gridData.length}개의 데이터를 성공적으로 뽑았습니다! 🎉`);
+                console.log(`📍 [SCRAPE 완료] 총 ${gridData.length}개의 찐 데이터를 찾았습니다!`);
                 return res.json({ 
                     status: 'SUCCESS', 
                     message: '데이터 추출 성공',
@@ -221,8 +215,7 @@ app.post('/execute', async (req, res) => {
                 });
 
             } catch (err) {
-                console.log(`📍 [SCRAPE 에러] 막힘 발생: ${err.message}`);
-                console.log('📍 사진을 캡처해서 n8n으로 전송합니다...');
+                console.log(`📍 [SCRAPE 에러] ${err.message}`);
                 const imageBuffer = await globalPage.screenshot();
                 const base64Image = imageBuffer.toString('base64');
                 return res.json({ 
