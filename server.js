@@ -49,25 +49,23 @@ app.post('/scrape-naver-inventory', async (req, res) => {
 
         console.log('📍 [STEP 4] 네이버 페이지 접속 완료! ID/PW 입력을 시작합니다...');
         
-        // 캡처해주신 돔(DOM) 구조를 바탕으로 안정적인 셀렉터를 타겟팅합니다.
         // 1. ID 입력 (이메일/판매자 아이디) - 사람처럼 타이핑
         await page.type('input[placeholder="아이디 또는 이메일 주소"]', NAV_USER, { delay: 100 }); 
         
         // 2. 비밀번호 입력
         await page.type('input[placeholder="비밀번호"]', NAV_PW, { delay: 100 });
         
-        // 3. 로그인 버튼 클릭 (내부 텍스트가 '로그인'인 버튼을 명시적으로 클릭)
+        // 3. 로그인 버튼 클릭
         await page.click('button:has-text("로그인")');
 
         console.log('📍 [STEP 5] 로그인 버튼 클릭 완료! 2단계 인증 대기 중...');
 
         // 🔒 2단계 인증 화면 감지 및 처리
         try {
-            // 인증 화면이 뜨는지 최대 5초간 대기
             await page.waitForSelector('text=인증정보 선택하기', { timeout: 5000 });
             console.log('🔒 2단계 인증 화면 감지됨!');
             
-            // 이메일 옵션을 찾으며 헤매지 않고, 디폴트로 둔 상태에서 즉시 버튼을 명시적으로 클릭합니다.
+            // 이메일 옵션을 찾으며 헤매지 않고, 디폴트로 둔 상태에서 즉시 버튼을 클릭합니다.
             console.log('[인증정보 선택하기] 버튼 클릭!');
             await page.click('text=인증정보 선택하기');
             
@@ -75,28 +73,57 @@ app.post('/scrape-naver-inventory', async (req, res) => {
             console.log('2단계 인증 화면이 없거나 이미 통과했습니다.');
         }
 
-        // 3. 재고 페이지 이동 및 데이터 크롤링 (이후 실제 데이터 파싱 시 작성할 영역)
-        // await page.goto('N배송_재고관리_페이지_URL');
-        // const rawData = await page.$$eval('table tr', rows => { ... });
+        console.log('📍 [STEP 6] N배송 재고관리 페이지로 이동 중...');
+        // 페이지 이동 후 네트워크 요청(API 데이터 호출 등)이 잦아들 때까지 대기합니다.
+        await page.goto('https://sell.smartstore.naver.com/#/logistics/sku-management/quantity', {
+            waitUntil: 'networkidle',
+            timeout: 60000
+        });
 
-        console.log('📍 [STEP 6] 데이터 정제 및 n8n 반환 완료');
+        console.log('📍 [STEP 7] 검색 버튼 클릭 및 결과 대기...');
+        // '검색' 텍스트를 가진 버튼을 클릭합니다.
+        await page.click('button:has-text("검색")');
 
-        // 4. PostgreSQL 저장용 정제 데이터 (테스트용)
-        const cleanedData = [
-            { 
-                sku_id: 'ITEM-BLK-20', 
-                n_delivery_stock: 150, 
-                sales_count: 12 
-            },
-            { 
-                sku_id: 'ITEM-SLV-24', 
-                n_delivery_stock: 85, 
-                sales_count: 5 
-            }
-        ];
+        // 검색 결과(데이터)가 화면에 완전히 그려질 수 있도록 3초 정도 넉넉히 기다려줍니다.
+        await page.waitForTimeout(3000);
 
-        // n8n이 바로 Item으로 인식하도록 배열 형태로 리턴
-        res.status(200).json(cleanedData);
+        console.log('📍 [STEP 8] 표(테이블)에서 재고 데이터 추출 시작...');
+
+        // 캡처된 DOM 구조(div.css-wa81vt 등)를 기반으로 브라우저 내부에서 데이터를 추출합니다.
+        const inventoryData = await page.evaluate(() => {
+            const results = [];
+            // 화면 캡처에서 확인된 행(Row) 컨테이너 클래스를 타겟으로 지정합니다.
+            const rows = document.querySelectorAll('div.css-wa81vt');
+
+            rows.forEach(row => {
+                // 각 행 안의 텍스트를 가져와서 줄바꿈(\n)이나 탭(\t) 단위로 쪼갭니다.
+                const text = row.innerText.trim();
+                if (!text) return;
+
+                const columns = text.split(/\n|\t/).map(t => t.trim()).filter(t => t !== '');
+
+                // 헤더(제목) 행은 제외하고 실제 데이터만 추출
+                // 통상적으로 첫 번째 컬럼이 SKU ID이므로 이를 기준으로 삼습니다.
+                if (columns.length >= 3 && columns[0] !== 'SKU ID') {
+                    results.push({
+                        sku_id: columns[0],         
+                        barcode: columns[1],        
+                        product_name: columns[2],   
+                        temperature: columns[3],    
+                        // 전체 데이터를 담아 n8n에서 확인 가능하도록 평탄화된 배열을 포함합니다.
+                        // 이를 통해 n8n 내부에서 재고 수량이 몇 번째 칸에 있는지 쉽게 파악할 수 있습니다.
+                        raw_data: columns
+                    });
+                }
+            });
+            return results;
+        });
+
+        console.log(`📍 [STEP 9] 총 ${inventoryData.length}개의 데이터 추출 완료. n8n으로 반환합니다.`);
+
+        // n8n이 바로 Item으로 분리(Split)할 수 있도록, 불필요한 래핑이나 raw 구조 없이 
+        // 완벽히 평탄화된 순수 배열(Flat Array) 형태로만 응답합니다.
+        res.status(200).json(inventoryData);
 
     } catch (error) {
         console.error('크롤링 에러 발생:', error);
@@ -110,7 +137,7 @@ app.post('/scrape-naver-inventory', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 8080;
-// Railway 환경에서 외부 접속 허용
+// Railway 환경에서 외부 접속(포트 포워딩)을 허용하기 위해 '0.0.0.0'을 명시합니다.
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`Playwright server listening on :${PORT}`);
 });
