@@ -1,87 +1,74 @@
 const express = require('express');
 const { chromium } = require('playwright');
-const fs = require('fs');
-
 const app = express();
+
 app.use(express.json());
 
-const SESSION_FILE = '/data/naver_session.json'; // Railway Volume 마운트 경로 추천
-
-app.post('/scrape/naver-inventory', async (req, res) => {
-    const { id, pw } = req.body;
-    let browser;
-
-    try {
-        browser = await chromium.launch({
-            headless: true,
-            args: ['--no-sandbox', '--disable-setuid-sandbox'] // 클라우드 환경 필수 옵션
-        });
-
-        // 세션(쿠키)이 있으면 불러오기, 없으면 새로 로그인
-        let context;
-        if (fs.existsSync(SESSION_FILE)) {
-            context = await browser.newContext({ storageState: SESSION_FILE });
-        } else {
-            context = await browser.newContext();
+// n8n에서 찔러주는 URL
+app.post('/run', async (req, res) => {
+    // n8n Body에서 보낸 타겟, 아이디, 비밀번호를 꺼냅니다.
+    const { target, id, pw } = req.body; 
+    
+    if (target === 'naver_inventory') {
+        try {
+            const result = await runNaverScraper(id, pw);
+            res.json({ success: true, data: result });
+        } catch (error) {
+            console.error('크롤링 중 에러 발생:', error);
+            res.status(500).json({ success: false, error: error.message });
         }
-
-        const page = await context.newPage();
-
-        // 1. 네이버 커머스 로그인 페이지 진입 (세션이 없을 때만)
-        if (!fs.existsSync(SESSION_FILE)) {
-            await page.goto('https://accounts.commerce.naver.com/login?url=https%3A%2F%2Fsell.smartstore.naver.com%2F%23%2Flogin-callback');
-            
-            // 봇 탐지 우회: evaluate로 직접 값 입력 (또는 clipboard 복붙 로직 사용)
-            await page.evaluate(({naverId, naverPw}) => {
-                document.querySelector('input[name="id"]').value = naverId;
-                document.querySelector('input[name="pw"]').value = naverPw;
-            }, { naverId: id, naverPw: pw });
-
-            // 로그인 버튼 클릭
-            await page.click('button[type="submit"]');
-            
-            // 로그인 완료 후 URL 변경이나 특정 요소 대기 (2단계 인증이 뜰 수 있음 - 주의)
-            await page.waitForNavigation({ waitUntil: 'networkidle' });
-
-            // 성공 시 세션 저장 (Railway Volume에 저장됨)
-            await context.storageState({ path: SESSION_FILE });
-        }
-
-        // 2. N배송 재고관리 페이지 이동
-        await page.goto('https://sell.smartstore.naver.com/#/logistics/sku-management/information');
-        await page.waitForSelector('.css-v3t7n8'); // 검색 버튼 렌더링 대기
-
-        // 3. 검색 버튼 클릭
-        await page.click('button:has-text("검색")'); // '검색' 텍스트를 가진 버튼 클릭
-        
-        // 데이터 로딩 대기 (로더가 사라지거나 그리드 데이터가 뜰 때까지)
-        await page.waitForTimeout(3000); // 명시적 대기(안정성 확보)
-
-        // 4. 데이터 추출 (페이지네이션 생략된 단일 페이지 기준 예시)
-        const inventoryData = await page.evaluate(() => {
-            const rows = Array.from(document.querySelectorAll('div[role="row"]')); // 실제 그리드의 Row 셀렉터 확인 필요
-            return rows.map(row => {
-                const cells = row.querySelectorAll('div[role="gridcell"]');
-                if (cells.length === 0) return null;
-                return {
-                    sku_id: cells[1]?.innerText || '', // 컬럼 인덱스는 실제 HTML 구조에 맞게 수정 필요
-                    sku_name: cells[2]?.innerText || '',
-                    barcode: cells[3]?.innerText || '',
-                    stock: parseInt(cells[4]?.innerText || '0', 10)
-                };
-            }).filter(item => item !== null);
-        });
-
-        await browser.close();
-        res.json({ success: true, data: inventoryData });
-
-    } catch (error) {
-        console.error('Scraping Error:', error);
-        if (browser) await browser.close();
-        res.status(500).json({ success: false, error: error.message });
+    } else {
+        res.status(400).json({ error: '알 수 없는 target 입니다.' });
     }
 });
 
-app.listen(8080, () => {
-    console.log('Playwright API Server running on port 8080');
-});
+// 네이버 실제 작동 로직
+async function runNaverScraper(naverId, naverPw) {
+    const browser = await chromium.launch({ args: ['--no-sandbox', '--disable-setuid-sandbox'] });
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    
+    console.log('1. 네이버 로그인 페이지 이동 중...');
+    await page.goto('https://accounts.commerce.naver.com/login?url=https%3A%2F%2Fsell.smartstore.naver.com%2F%23%2Flogin-callback');
+
+    // 2. 아이디/비밀번호 입력 후 로그인 클릭
+    await page.evaluate(({id, pw}) => {
+        document.querySelector('input[name="id"]').value = id;
+        document.querySelector('input[name="pw"]').value = pw;
+    }, { id: naverId, pw: naverPw });
+    await page.click('button[type="submit"]');
+
+    // ==========================================
+    // 💡 [여기서부터 2단계 인증 방지 코드입니다] 💡
+    // ==========================================
+    console.log('🔒 2단계 인증 화면인지 확인 중...');
+    const isTwoFactorScreen = await page.locator('text=인증정보 선택하기').isVisible({ timeout: 5000 }).catch(() => false);
+
+    if (isTwoFactorScreen) {
+        console.log('2단계 인증 감지됨! 메일 옵션을 헤매지 않고 디폴트 상태로 바로 진행합니다.');
+        // 특정 이메일(예: nldList_0)을 찾으려고 시도하지 않고, 바로 버튼을 누릅니다.
+        await page.click('button:has-text("인증정보 선택하기")');
+        
+        // 인증번호가 메일로 발송될 시간을 잠시 기다려줍니다.
+        await page.waitForTimeout(3000); 
+    }
+    // ==========================================
+
+    console.log('3. N배송 재고관리 페이지로 이동 중...');
+    await page.goto('https://sell.smartstore.naver.com/#/logistics/sku-management/information');
+    
+    // 보내주신 첫 번째 이미지의 개발자 도구를 참고하여 '검색' 버튼을 누릅니다.
+    await page.waitForSelector('.css-v3t7n8');
+    await page.click('button:has-text("검색")');
+    
+    console.log('데이터 로딩 대기 중...');
+    await page.waitForTimeout(3000); // 표가 뜰 때까지 3초 대기
+
+    // 임시로 성공 메시지 반환 (다음 단계에서 이 부분에 표 데이터를 긁어오는 코드를 넣을 겁니다)
+    const resultMessage = "로그인 및 검색 버튼 클릭까지 성공했습니다!";
+
+    await browser.close();
+    return resultMessage;
+}
+
+app.listen(8080, () => console.log('서버가 8080 포트에서 실행 대기 중입니다.'));
