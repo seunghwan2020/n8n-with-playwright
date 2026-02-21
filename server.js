@@ -2,12 +2,11 @@ const express = require('express');
 const app = express();
 app.use(express.json());
 
-// 🌟 각 사이트별 전담 모듈을 불러옵니다.
-const handler11st = require('./11th.js');
-// const handlerEasyAdmin = require('./easyadmin.js'); // 나중에 이지어드민을 추가할 때 주석을 풉니다.
+// 🌟 변경됨: scrapers 폴더 안에 있는 전담 모듈들을 불러옵니다.
+const handler11st = require('./scrapers/11th.js');
+// const handlerEasyAdmin = require('./scrapers/easyadmin.js'); // 나중에 주석 해제
 
 app.post('/execute', async (req, res) => {
-    // 🌟 이제 n8n에서 'site'라는 이름표도 같이 보내줘야 합니다.
     const { site, action } = req.body;
 
     if (!site) {
@@ -17,7 +16,7 @@ app.post('/execute', async (req, res) => {
     try {
         console.log(`\n🚀 [요청 수신] 타겟 사이트: ${site} / 액션: ${action}`);
 
-        // 사이트 이름에 맞춰서 각 전담 파일로 업무를 넘깁니다.
+        // 사이트 이름표(site)에 맞춰서 scrapers 폴더 안의 각 파일로 업무를 넘깁니다.
         if (site === '11st') {
             await handler11st.execute(action, req, res);
         } 
