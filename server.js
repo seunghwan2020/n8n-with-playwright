@@ -22,63 +22,77 @@ app.post('/scrape-naver-inventory', async (req, res) => {
     let browser;
 
     try {
-        console.log('Starting Container');
         console.log('로봇이 네이버 스마트스토어 자동 로그인을 시작합니다...');
         
+        console.log('📍 [STEP 1] 브라우저 실행 시도 중...');
         browser = await chromium.launch({ 
             headless: true, // Railway 환경에서는 반드시 true
-            args: ['--no-sandbox', '--disable-setuid-sandbox'] 
+            args: [
+                '--no-sandbox', 
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage' // 컨테이너 환경 메모리 크래시(OOM) 방지용 옵션
+            ] 
         });
-        const context = await browser.newContext();
+        
+        console.log('📍 [STEP 2] 브라우저 실행 성공! 새 탭을 엽니다...');
+        const context = await browser.newContext({
+            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }); // 봇 탐지 우회를 위해 일반 크롬 유저에이전트 명시
+        
         const page = await context.newPage();
 
-        // 1. 로그인 페이지 이동
-        await page.goto('https://sell.smartstore.naver.com/#/login', { waitUntil: 'networkidle' });
+        console.log('📍 [STEP 3] 네이버 로그인 페이지 접속 시도 중...');
+        // networkidle 대신 domcontentloaded로 변경하고, 타임아웃을 60초로 넉넉하게 늘림
+        await page.goto('https://sell.smartstore.naver.com/#/login', { 
+            waitUntil: 'domcontentloaded', 
+            timeout: 60000 
+        });
 
-        // 로그인 정보 입력 (Railway 환경 변수 사용)
-        // 주의: 네이버 로그인 폼의 실제 HTML 태그 id나 name에 맞춰 셀렉터를 수정해야 할 수 있습니다.
+        console.log('📍 [STEP 4] 네이버 페이지 접속 완료! ID/PW 입력을 시작합니다...');
+        // 실제 네이버 로그인 폼의 HTML 태그 id/name에 맞춰 셀렉터를 수정해야 할 수 있습니다.
         await page.fill('#username_selector', NAV_USER); 
         await page.fill('#password_selector', NAV_PW);
         await page.click('#login_button_selector');
 
-        // 2. 🔒 2단계 인증 화면 감지 및 처리
+        console.log('📍 [STEP 5] 로그인 버튼 클릭 완료! 2단계 인증 대기 중...');
+
+        // 🔒 2단계 인증 화면 감지 및 처리
         try {
             // 인증 화면이 뜨는지 최대 5초간 대기
             await page.waitForSelector('text=인증정보 선택하기', { timeout: 5000 });
             console.log('🔒 2단계 인증 화면 감지됨!');
             
-            // 옵션을 건드리지 않고 디폴트 상태에서 버튼만 명시적으로 클릭
+            // 이메일 옵션을 찾으며 헤매지 않고, 디폴트로 둔 상태에서 즉시 버튼을 명시적으로 클릭합니다.
             console.log('[인증정보 선택하기] 버튼 클릭!');
             await page.click('text=인증정보 선택하기');
-            
-            // 인증번호 입력 대기 등 추가 로직이 필요하다면 여기에 작성
             
         } catch (e) {
             console.log('2단계 인증 화면이 없거나 이미 통과했습니다.');
         }
 
-        // 3. 재고 페이지 이동 및 데이터 크롤링 
+        // 3. 재고 페이지 이동 및 데이터 크롤링 로직 (추후 실제 페이지에 맞게 구현 필요)
         // await page.goto('N배송_재고관리_페이지_URL');
         // const rawData = await page.$$eval('table tr', rows => { ... });
 
-        // 4. PostgreSQL 저장용 정제 데이터 
-        // D.CURVIN 여행용 캐리어 라인업에 맞춘 테스트 데이터 예시입니다.
-        // 불필요한 객체 래핑 없이 바로 배열로 구성합니다.
+        console.log('📍 [STEP 6] 데이터 정제 및 n8n 반환');
+
+        // 4. PostgreSQL 저장용 정제 데이터
+        // 쓸데없이 mail_id가 생기거나 메일 전체가 raw로 감싸지는 현상을 방지하기 위해
+        // n8n이 바로 Item으로 분리(Split)할 수 있는 완벽히 평탄화된 배열(Flat Array)을 생성합니다.
         const cleanedData = [
             { 
-                sku_id: 'DCURVIN-BLK-20', 
+                sku_id: 'ITEM-BLK-20', 
                 n_delivery_stock: 150, 
                 sales_count: 12 
             },
             { 
-                sku_id: 'DCURVIN-SLV-24', 
+                sku_id: 'ITEM-SLV-24', 
                 n_delivery_stock: 85, 
                 sales_count: 5 
             }
         ];
 
-        // n8n에서 쓸데없는 구조 없이 바로 Item으로 쓸 수 있도록 배열 자체를 리턴합니다.
-        // n8n의 HTTP Request 노드 설정에서 'Response Format'을 'JSON'으로 두면 깔끔하게 파싱됩니다.
+        // n8n의 HTTP Request 노드에서 'Response Format'을 'JSON'으로 두면 깔끔하게 파싱됩니다.
         res.status(200).json(cleanedData);
 
     } catch (error) {
@@ -93,7 +107,7 @@ app.post('/scrape-naver-inventory', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 8080;
-// '0.0.0.0'을 추가하여 외부 접속(Railway 포트 포워딩)을 허용합니다.
+// Railway 환경에서 외부 접속(포트 포워딩)을 허용하기 위해 '0.0.0.0'을 명시합니다.
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`Playwright server listening on :${PORT}`);
 });
