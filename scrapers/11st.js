@@ -105,59 +105,71 @@ async function execute(action, req, res) {
             }
             if (!targetFrame) throw new Error('프레임을 찾지 못했습니다.');
 
-            // 🌟 300개씩 보기 설정 변경 (데이터 누락 방지)
-            console.log('📍 [11st] 페이지당 건수를 300건으로 변경합니다.');
-            try {
-                // 하단 페이지당 건수 선택 셀렉트 박스 조작 (사이트 구조에 따라 ID나 class 확인 필요)
-                // 보통 jqx-grid의 하단 콤보박스를 클릭하여 300 선택
-                await targetFrame.evaluate(() => {
-                    const pageSizeCombo = document.querySelector('.jqx-grid-pager-input');
-                    if (pageSizeCombo) {
-                        // 단순히 숫자를 바꾸는게 아니라 이벤트를 발생시키거나 
-                        // 11번가 페이지 내 함수 호출 (예: $("#SKUListGrid").jqxGrid({ pagesize: 300 });)
-                        // 안전하게 셀렉트 박스가 있다면 직접 선택 시도
-                        const select = document.querySelector('select[role="listbox"]'); // 예시
-                        if (select) {
-                            select.value = "300";
-                            select.dispatchEvent(new Event('change'));
-                        }
-                    }
-                });
-                await globalPage.waitForTimeout(2000);
-            } catch (e) {
-                console.log('📍 [주의] 300건 변경 실패, 기본값으로 진행합니다.');
-            }
+            // 1. 페이지당 건수 300건으로 변경 시도
+            await targetFrame.evaluate(() => {
+                const select = document.querySelector('.jqx-grid-pager-input select') || document.querySelector('select[role="listbox"]');
+                if (select) {
+                    select.value = "300";
+                    select.dispatchEvent(new Event('change'));
+                }
+            });
+            await globalPage.waitForTimeout(2000);
 
-            // 검색 클릭
+            // 2. 검색 클릭
             await targetFrame.evaluate(() => document.querySelector('#btnSearch').click());
-            await globalPage.waitForTimeout(10000); 
+            await globalPage.waitForTimeout(8000); 
 
-            // 데이터 추출
-            const gridData = await targetFrame.evaluate(() => {
-                const rows = document.querySelectorAll('div[role="row"]');
-                const result = [];
-                rows.forEach(row => {
-                    const cells = row.querySelectorAll('div[role="gridcell"]');
-                    if (cells.length > 2) {
-                        let rowFullText = ''; 
-                        const rowObj = {};
-                        cells.forEach((cell, idx) => {
-                            const text = (cell.textContent || '').replace(/\s+/g, ' ').trim(); 
-                            rowObj[`col_${idx}`] = text;
-                            rowFullText += text;
-                        });
-                        if (rowFullText.length > 5) result.push(rowObj);
+            // 🌟 3. 자동 스크롤 수집 로직 (핵심)
+            const finalData = await targetFrame.evaluate(async () => {
+                const results = new Map(); // 중복 방지를 위한 Map
+                const scrollContainer = document.querySelector('.jqx-grid-content') || document.querySelector('#SKUListGrid');
+                
+                if (!scrollContainer) return [];
+
+                let lastHeight = 0;
+                let sameHeightCount = 0;
+
+                // 최대 20번 스크롤 시도 (데이터가 아주 많을 경우 대비)
+                for (let i = 0; i < 20; i++) {
+                    // 현재 보이는 행들 수집
+                    const rows = document.querySelectorAll('div[role="row"]');
+                    rows.forEach(row => {
+                        const cells = row.querySelectorAll('div[role="gridcell"]');
+                        if (cells.length > 2) {
+                            const skuNumber = (cells[2].textContent || '').trim(); // col_2가 SKU번호
+                            const skuName = (cells[3].textContent || '').trim();   // col_3이 SKU명
+                            
+                            if (skuNumber && skuNumber !== '') {
+                                const rowObj = {};
+                                cells.forEach((cell, idx) => {
+                                    rowObj[`col_${idx}`] = (cell.textContent || '').trim();
+                                });
+                                results.set(skuNumber, rowObj); // SKU번호를 키로 중복 제거하며 저장
+                            }
+                        }
+                    });
+
+                    // 아래로 스크롤
+                    scrollContainer.scrollTop += 800; 
+                    await new Promise(r => setTimeout(r, 1500)); // 로딩 대기
+
+                    // 스크롤이 끝에 도달했는지 확인
+                    if (scrollContainer.scrollTop === lastHeight) {
+                        sameHeightCount++;
+                        if (sameHeightCount >= 2) break; // 두 번 시도했는데도 그대로면 끝
+                    } else {
+                        sameHeightCount = 0;
+                        lastHeight = scrollContainer.scrollTop;
                     }
-                });
-                return result;
+                }
+                return Array.from(results.values());
             });
 
-            console.log(`📍 [11st] 수집 완료: ${gridData.length}건`);
-            // 🌟 screenshot_full 제거하여 응답을 가볍게 만듭니다.
+            console.log(`📍 [11st] 스크롤 수집 완료: 총 ${finalData.length}건`);
             return res.json({ 
                 status: 'SUCCESS', 
-                count: gridData.length,
-                data: gridData 
+                count: finalData.length,
+                data: finalData 
             });
         }
     } catch (err) {
