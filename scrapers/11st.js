@@ -88,7 +88,13 @@ async function execute(action, req, res) {
             if (!globalPage) throw new Error('Session not found. Please login.');
 
             console.log('STEP 2: Navigating to Stock Page...');
-            await globalPage.goto('https://soffice.11st.co.kr/view/40394', { waitUntil: 'domcontentloaded' });
+            
+            // ✅ 수정 (domcontentloaded + 타임아웃 60초)
+            await globalPage.goto('https://login.11st.co.kr/auth/front/selleroffice/login.tmall', { 
+                    waitUntil: 'domcontentloaded', 
+                    timeout: 60000 
+                });
+            
             await globalPage.waitForTimeout(10000);
 
             let targetFrame = null;
