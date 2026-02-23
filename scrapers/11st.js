@@ -229,18 +229,95 @@ async function execute(action, req, res) {
                 }
             }
 
+// ============================
+            // 🔧 2단계 인증 처리 (디버깅 강화 버전)
+            // ============================
             if (await globalPage.isVisible('button:has-text("인증정보 선택하기")')) {
-                console.log('STEP 4: 인증정보 선택 팝업 감지');
+                console.log('STEP 4: 2단계 인증 페이지 감지');
+
+                // 📸 인증 페이지 스크린샷
+                const authPageShot1 = await takeScreenshot(globalPage, 'auth-page-before-click');
+
+                // 🔧 디버깅: 테이블 HTML 확인
+                const tableHtml = await globalPage.evaluate(() => {
+                    const table = document.querySelector('table') || document.querySelector('.tbl_list') || document.querySelector('[class*="table"]');
+                    return table ? table.outerHTML : 'TABLE NOT FOUND';
+                });
+                console.log('[STEP 4-DEBUG] 테이블 HTML:', tableHtml);
+
+                // 🔧 디버깅: 페이지 전체에서 radio, input, select 요소 찾기
+                const formElements = await globalPage.evaluate(() => {
+                    const elements = [];
+                    document.querySelectorAll('input[type="radio"], input[type="checkbox"], select, tr, label').forEach(el => {
+                        elements.push({
+                            tag: el.tagName,
+                            type: el.type || '',
+                            id: el.id || '',
+                            name: el.name || '',
+                            className: el.className || '',
+                            text: el.textContent?.substring(0, 100) || '',
+                            visible: el.offsetParent !== null
+                        });
+                    });
+                    return elements;
+                });
+                console.log('[STEP 4-DEBUG] 폼 요소들:', JSON.stringify(formElements, null, 2));
+
+                // "인증정보 선택하기" 버튼 클릭
+                console.log('[STEP 4-1] "인증정보 선택하기" 버튼 클릭');
                 await globalPage.click('button:has-text("인증정보 선택하기")');
-                await globalPage.waitForTimeout(2000);
+                await globalPage.waitForTimeout(5000); // 기존 2초 → 5초로 늘림
+
+                // 📸 클릭 후 스크린샷
+                const authPageShot2 = await takeScreenshot(globalPage, 'auth-page-after-click');
+                console.log('[STEP 4-2] 클릭 후 URL:', globalPage.url());
+
+                // 🔧 디버깅: 클릭 후 변경된 페이지 HTML 핵심 부분
+                const bodyText = await globalPage.evaluate(() => {
+                    return document.body.innerText.substring(0, 2000);
+                });
+                console.log('[STEP 4-DEBUG] 클릭 후 페이지 텍스트:\n', bodyText);
+
+                // 🔧 디버깅: 모든 버튼 텍스트 수집
+                const allButtons = await globalPage.evaluate(() => {
+                    return Array.from(document.querySelectorAll('button, a.btn, input[type="submit"]')).map(b => ({
+                        tag: b.tagName,
+                        text: b.textContent?.trim().substring(0, 50) || '',
+                        id: b.id || '',
+                        visible: b.offsetParent !== null
+                    }));
+                });
+                console.log('[STEP 4-DEBUG] 모든 버튼:', JSON.stringify(allButtons, null, 2));
             }
 
+            // 기존 이메일 인증 라디오버튼 감지 (기존 UI 대응)
             if (await globalPage.isVisible('label[for="auth_type_02"]')) {
-                console.log('STEP 5: 이메일 인증 필요 → 인증번호 전송');
+                console.log('STEP 5: 이메일 인증 필요 → 인증번호 전송 (기존 UI)');
                 await globalPage.click('label[for="auth_type_02"]');
                 globalOtpRequestTime = Date.now() - 60000;
                 await globalPage.click('button:has-text("인증번호 전송"):visible');
                 return res.json({ status: 'AUTH_REQUIRED', message: '이메일 인증번호 전송됨' });
+            }
+
+            // 🔧 여기까지 왔으면: 인증 페이지인데 기존 방식으로 처리 불가
+            // → 디버깅 정보 포함해서 반환
+            const currentPageUrl = globalPage.url();
+            if (currentPageUrl.includes('login.11st.co.kr') || currentPageUrl.includes('auth')) {
+                console.log('STEP 5: ⚠️ 인증 페이지이지만 처리 방법을 모르는 상태');
+                const shotUrl = await takeScreenshot(globalPage, 'auth-unknown-state');
+                
+                // 페이지 전체 HTML 수집 (디버깅용)
+                const fullHtml = await globalPage.evaluate(() => {
+                    return document.documentElement.outerHTML;
+                });
+
+                return res.json({
+                    status: 'AUTH_CHANGED',
+                    message: '2단계 인증 UI가 변경된 것 같습니다. 디버깅 정보를 확인하세요.',
+                    screenshot_url: shotUrl,
+                    debug_url: currentPageUrl,
+                    debug_page_html: fullHtml.substring(0, 10000) // 앞 10000자만
+                });
             }
 
             // ✅ 로그인 성공 → 이때만 세션 저장
